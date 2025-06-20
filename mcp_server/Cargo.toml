@@ -10,7 +10,7 @@ name = "mcp_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rdocs-mcp-server"
+name = "dociium"
 path = "src/main.rs"
 
 [dependencies]

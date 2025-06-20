@@ -1,4 +1,4 @@
-# Rust Documentation MCP Server
+# DOCIIUM: Rust Documentation MCP Server
 
 A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to Rust crate documentation, trait implementations, and source code exploration. Built in Rust for maximum performance and reliability.
 
