@@ -1,0 +1,29 @@
+[package]
+name = "index_core"
+version = "0.1.0"
+edition = "2021"
+description = "Search and indexing core for Rust documentation"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Workspace dependencies
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+rustdoc-types = { workspace = true }
+# tantivy = { workspace = true } # Temporarily disabled due to build issues
+futures = { workspace = true }
+
+# Additional dependencies
+rayon = "1.8"
+regex = "1.10"
+unicode-normalization = "0.1"
+fnv = "1.0"
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio = { workspace = true }
+tempfile = { workspace = true }
+proptest = "1.4"

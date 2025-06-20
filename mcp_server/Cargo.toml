@@ -1,0 +1,31 @@
+[package]
+name = "mcp_server"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server for Rust documentation queries"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "rdocs-mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace dependencies
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rmcp = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+
+# Local crates
+doc_engine = { path = "../doc_engine" }
+index_core = { path = "../index_core" }
+
+[features]
+default = ["stdio"]
+stdio = []
+websocket = []
+dev = ["tokio/tracing"]

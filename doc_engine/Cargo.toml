@@ -1,0 +1,40 @@
+[package]
+name = "doc_engine"
+version = "0.1.0"
+edition = "2021"
+description = "Documentation engine for fetching and processing Rust crate documentation"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Workspace dependencies
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+crates_io_api = { workspace = true }
+rustdoc-types = { workspace = true }
+# rocksdb = { workspace = true } # Temporarily disabled due to build issues
+# flate2 = { workspace = true } # Temporarily disabled due to build issues
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+walkdir = { workspace = true }
+futures = { workspace = true }
+
+# Local crates
+index_core = { path = "../index_core" }
+
+# Additional dependencies
+tar = "0.4"
+regex = "1.10"
+semver = "1.0"
+url = "2.5"
+bytes = "1.5"
+lru = "0.12"
+bincode = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio-test = "0.4"
