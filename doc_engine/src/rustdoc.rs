@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
 /// Configuration for rustdoc JSON generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +79,33 @@ impl RustdocBuilder {
     #[instrument(skip(self), fields(crate_dir = ?self.crate_dir))]
     pub async fn build_json(&self) -> Result<RustdocCrate> {
         info!("Building rustdoc JSON for crate at: {:?}", self.crate_dir);
+
+        // Check if cargo is available for the configured toolchain
+        let mut cargo_check_cmd = Command::new("rustup");
+        cargo_check_cmd.arg("run");
+        cargo_check_cmd.arg(&self.config.toolchain);
+        cargo_check_cmd.arg("cargo");
+        cargo_check_cmd.arg("--version");
+
+        debug!("Checking cargo availability with command: {:?}", cargo_check_cmd);
+
+        let cargo_check_output = cargo_check_cmd
+            .output()
+            .await
+            .context("Failed to spawn cargo version check process")?;
+
+        if !cargo_check_output.status.success() {
+            let stderr = String::from_utf8_lossy(&cargo_check_output.stderr);
+            return Err(anyhow::anyhow!(
+                "Cargo component seems to be missing or not functional for toolchain '{}'. \
+                Stderr: {}. \
+                Please try: `rustup component add cargo --toolchain {}`",
+                self.config.toolchain,
+                stderr,
+                self.config.toolchain
+            ));
+        }
+        info!("Cargo check successful for toolchain '{}'", self.config.toolchain);
 
         // Find the actual crate directory (may be nested in extracted tarball)
         let actual_crate_dir = self.find_crate_root().await?;
