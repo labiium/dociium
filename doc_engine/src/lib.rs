@@ -188,11 +188,63 @@ impl DocEngine {
 
         let cache_key_versioned = format!("{}@{}", crate_name, target_version);
 
-        // Check if we have cached documentation
+        // Attempt to fetch from docs.rs first
+        match self
+            .fetcher
+            .fetch_rustdoc_json_from_docs_rs(crate_name, &target_version.to_string())
+            .await
+        {
+            Ok(Some(rustdoc_crate)) => {
+                info!(
+                    "Successfully fetched rustdoc.json from docs.rs for {}@{}",
+                    crate_name, target_version
+                );
+                let docs = CrateDocumentation::new(rustdoc_crate, &self.index).await?;
+                self.cache
+                    .store_crate_docs(&cache_key_versioned, &docs)?;
+                let docs_arc = Arc::new(docs);
+                // Use cache_key_versioned for memory cache here, as we have specific version data
+                self.memory_cache
+                    .lock()
+                    .unwrap()
+                    .put(cache_key_versioned.clone(), Arc::clone(&docs_arc));
+
+                // Also, if the original request was for "latest" and it matches this version,
+                // update the "latest" key in memory cache too.
+                if cache_key == cache_key_versioned {
+                     self.memory_cache
+                        .lock()
+                        .unwrap()
+                        .put(cache_key, Arc::clone(&docs_arc));
+                } else if version.unwrap_or("") == "latest" {
+                    // If original version was "latest", we want "latest" key to point to this.
+                     self.memory_cache
+                        .lock()
+                        .unwrap()
+                        .put(cache_key.clone(), Arc::clone(&docs_arc));
+                }
+
+                return Ok(docs_arc);
+            }
+            Ok(None) => {
+                info!(
+                    "rustdoc.json not found on docs.rs for {}@{}, proceeding to local cache/build.",
+                    crate_name, target_version
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to fetch rustdoc.json from docs.rs for {}@{}: {:?}. Proceeding to local cache/build.",
+                    crate_name, target_version, e
+                );
+            }
+        }
+
+        // Check if we have disk cached documentation (if docs.rs fetch failed or didn't find)
         if let Some(cached_docs) = self.cache.get_crate_docs(&cache_key_versioned)? {
             let docs = Arc::new(cached_docs);
 
-            // Update memory cache
+            // Update memory cache using the original cache_key as this is a hit from general cache lookup
             {
                 let mut cache = self.memory_cache.lock().unwrap();
                 cache.put(cache_key, Arc::clone(&docs));
@@ -215,10 +267,18 @@ impl DocEngine {
 
         let docs = Arc::new(docs);
 
-        // Update memory cache
+        // Update memory cache using the original cache_key as this is a fresh build.
+        // The versioned key will also be identical to cache_key if version was specific,
+        // or cache_key will be "latest" and point to this versioned build.
         {
             let mut cache = self.memory_cache.lock().unwrap();
-            cache.put(cache_key, Arc::clone(&docs));
+            // Clone cache_key for the first put, so it's not moved if needed for comparison or second put.
+            cache.put(cache_key.clone(), Arc::clone(&docs));
+            // If cache_key_versioned is different from cache_key (i.e. original request was "latest")
+            // ensure the versioned key is also in memory cache.
+            if cache_key != cache_key_versioned { // cache_key is still valid here due to clone above
+                 cache.put(cache_key_versioned, Arc::clone(&docs));
+            }
         }
 
         Ok(docs)
@@ -504,19 +564,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_real_documentation_fetch() {
-
+        // This test will try to fetch itoa v1.0.11.
+        // Based on previous checks, docs.rs is likely to 404 the rustdoc.json.
+        // So, this will likely fall back to a local build.
+        // The skip logic for missing cargo/toolchain for local build remains relevant.
         let temp_dir = tempdir().unwrap();
         let engine = DocEngine::new(temp_dir.path()).await.unwrap();
 
         match engine
-            .get_item_doc("itoa", "itoa::Buffer::from", Some("1.0.0"))
+            .get_item_doc("itoa", "itoa::Buffer::new", Some("1.0.11"))
             .await
         {
             Ok(item) => {
+                let expected_substring = "This is a cheap operation; you don't need to worry about reusing buffers\nfor efficiency.";
                 assert!(
-                    item.rendered_markdown
-                        .contains("Returns the argument unchanged"),
-                    "Expected sentence is missing"
+                    item.rendered_markdown.contains(expected_substring),
+                    "Documentation for itoa::Buffer::new ({}) did not contain expected substring '{}'.",
+                    item.rendered_markdown,
+                    expected_substring
                 );
             }
             Err(err) => {
@@ -538,6 +603,52 @@ mod tests {
                 } else {
                     panic!("Test failed due to unexpected error: {:?}", err);
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_docs_rs_json_unavailable_fallback_to_local_build_failure() {
+        let temp_dir = tempdir().unwrap();
+        let engine = DocEngine::new(temp_dir.path()).await.unwrap();
+
+        let crate_name = "itoa";
+        // This version is intentionally invalid and should not exist on crates.io
+        let invalid_version = "0.0.0-hopefully-not-on-docsrs";
+        let item_path = "itoa::Buffer"; // Path doesn't matter as much as the fetch failure
+
+        match engine
+            .get_item_doc(crate_name, item_path, Some(invalid_version))
+            .await
+        {
+            Ok(item_doc) => {
+                panic!(
+                    "Expected an error when trying to fetch/build crate {} with invalid version {}, but got Ok({:?})",
+                    crate_name, invalid_version, item_doc
+                );
+            }
+            Err(err) => {
+                let err_msg = err.to_string();
+                info!("Received expected error: {}", err_msg); // Log for visibility
+
+                // Check for error messages that indicate failure at the version resolution or download stage.
+                // This depends on how errors from `resolve_version` or `download_crate` in `fetcher.rs`
+                // and `build_rustdoc_json` in `rustdoc.rs` propagate.
+                // We expect it to fail trying to resolve/download this non-existent version.
+                let expected_error_substrings = [
+                    "Invalid version format", // From resolve_version if it fails to parse
+                    "Failed to get crate info", // If crate_info itself fails for some reason (unlikely for "itoa")
+                    "Failed to download crate", // From download_crate
+                    "No Cargo.toml found", // If download somehow "succeeded" with empty/bad dir (improbable)
+                    "Rustdoc command failed", // If it somehow got to rustdoc build for a bad crate (improbable)
+                    "Cargo component seems to be missing", // This could happen if cargo check fails for default toolchain
+                ];
+
+                assert!(
+                    expected_error_substrings.iter().any(|s| err_msg.contains(s)),
+                    "Error message '{}' did not contain any of the expected substrings for a build/fetch failure of a non-existent version.",
+                    err_msg
+                );
             }
         }
     }
