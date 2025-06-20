@@ -124,21 +124,17 @@ All 7 core tools are implemented with proper MCP interfaces:
 ### Basic Startup
 ```bash
 cd rdocs_mcp
-cargo run --bin rdocs-mcp-server
+cargo run --bin dociium
 ```
 
 ### With Custom Cache Directory
 ```bash
-RDOCS_CACHE_DIR=/path/to/cache cargo run --bin rdocs-mcp-server
+RDOCS_CACHE_DIR=/path/to/cache cargo run --bin dociium
 ```
 
 ### Testing
 ```bash
-# Unit tests
 cargo test
-
-# With network tests (requires internet)
-ENABLE_NETWORK_TESTS=1 cargo test
 ```
 
 ## Integration Examples

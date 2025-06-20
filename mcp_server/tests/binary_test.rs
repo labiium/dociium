@@ -9,7 +9,7 @@ use tempfile::TempDir;
 #[test]
 fn test_binary_exists() {
     // Test that the binary can be found and executed
-    let mut cmd = Command::cargo_bin("rdocs-mcp-server").unwrap();
+    let mut cmd = Command::cargo_bin("dociium").unwrap();
 
     // Just check that the binary exists and can start
     // We expect it to exit quickly since it needs stdio input for MCP
@@ -25,7 +25,7 @@ fn test_binary_with_cache_dir() {
     let temp_dir = TempDir::new().unwrap();
     let cache_path = temp_dir.path().to_str().unwrap();
 
-    let mut cmd = Command::cargo_bin("rdocs-mcp-server").unwrap();
+    let mut cmd = Command::cargo_bin("dociium").unwrap();
 
     // Set cache directory environment variable
     let _output = cmd
@@ -42,7 +42,7 @@ fn test_binary_help_or_version() {
     // Most Rust binaries support --help, let's see if ours does
     // Note: Our binary doesn't implement clap args, so this will likely fail
     // But we can at least verify it doesn't panic
-    let mut cmd = Command::cargo_bin("rdocs-mcp-server").unwrap();
+    let mut cmd = Command::cargo_bin("dociium").unwrap();
 
     let output = cmd
         .arg("--help")
@@ -65,7 +65,7 @@ fn test_cargo_version_info() {
     assert!(output.status.success());
 
     let metadata = String::from_utf8(output.stdout).unwrap();
-    assert!(metadata.contains("rdocs-mcp-server"));
+    assert!(metadata.contains("dociium"));
     assert!(metadata.contains("mcp_server"));
 }
 
@@ -73,7 +73,7 @@ fn test_cargo_version_info() {
 fn test_binary_compilation_features() {
     // Test that the binary compiles with different features
     let output = StdCommand::new("cargo")
-        .args(["check", "--bin", "rdocs-mcp-server", "--features", "stdio"])
+        .args(["check", "--bin", "dociium", "--features", "stdio"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to run cargo check");
@@ -117,7 +117,7 @@ fn test_workspace_binary_target() {
         })
         .expect("Should have a binary target");
 
-    assert_eq!(binary_target["name"].as_str(), Some("rdocs-mcp-server"));
+    assert_eq!(binary_target["name"].as_str(), Some("dociium"));
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn test_dependencies_available() {
 fn test_release_build_size() {
     // Build in release mode and check that binary is created
     let output = StdCommand::new("cargo")
-        .args(["build", "--release", "--bin", "rdocs-mcp-server"])
+        .args(["build", "--release", "--bin", "dociium"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to build release binary");
@@ -158,7 +158,7 @@ fn test_release_build_size() {
     let binary_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("target/release/rdocs-mcp-server");
+        .join("target/release/dociium");
 
     if cfg!(windows) {
         let binary_path = binary_path.with_extension("exe");
@@ -193,7 +193,7 @@ fn test_library_and_binary_coexist() {
     assert!(lib_output.status.success(), "Library should compile");
 
     let bin_output = StdCommand::new("cargo")
-        .args(["check", "--bin", "rdocs-mcp-server"])
+        .args(["check", "--bin", "dociium"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("Failed to check binary");

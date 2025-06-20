@@ -17,7 +17,7 @@ jobs:
         with:
           toolchain: ${{ matrix.toolchain }}
       - run: cargo fetch
-      - run: cargo test --workspace --all-targets --features stdio,network-tests,integration-tests
+      - run: cargo test --workspace --all-targets --features stdio,integration-tests
       - run: cargo audit --deny warnings
   mac:
     runs-on: macos-latest

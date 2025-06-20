@@ -75,6 +75,36 @@ impl DocEngine {
         self.fetcher.crate_info(name).await
     }
 
+    /// Resolve a user supplied version specification into a concrete semver [`Version`].
+    ///
+    /// The following forms are accepted:
+    ///  * `"latest"`, `"newest"`, `"current"`, `"*"`, empty string or `None` – use the crate's
+    ///    latest published version.
+    ///  * A version prefixed with `v` such as `"v1.2.3"`.
+    ///  * A short two component form like `"1.2"` which is interpreted as `"1.2.0"`.
+    ///  * A full semver string `"1.2.3"`.
+    fn resolve_version(
+        &self,
+        crate_info: &CrateInfo,
+        version_spec: Option<&str>,
+    ) -> Result<Version> {
+        let spec = version_spec.unwrap_or("").trim();
+
+        if spec.is_empty() || matches!(spec, "latest" | "newest" | "current" | "*") {
+            return Version::parse(&crate_info.latest_version).context("Invalid latest version");
+        }
+
+        let spec = spec.strip_prefix('v').unwrap_or(spec);
+        let normalized = if spec.matches('.').count() == 1 {
+            format!("{}.0", spec)
+        } else {
+            spec.to_string()
+        };
+
+        Version::parse(&normalized)
+            .with_context(|| format!("Invalid version format: {}", version_spec.unwrap_or("")))
+    }
+
     /// Get documentation for a specific item
     pub async fn get_item_doc(
         &self,
@@ -133,7 +163,10 @@ impl DocEngine {
         docs.search_symbols(query, kinds, limit)
     }
 
-    /// Ensure crate documentation is available and indexed
+    /// Ensure crate documentation is available and indexed.
+    ///
+    /// The `version` parameter accepts convenient specifiers as understood by
+    /// [`resolve_version`](Self::resolve_version).
     async fn ensure_crate_docs(
         &self,
         crate_name: &str,
@@ -151,11 +184,7 @@ impl DocEngine {
 
         // Get crate information
         let crate_info = self.fetcher.crate_info(crate_name).await?;
-        let target_version = if let Some(v) = version {
-            Version::parse(v).context("Invalid version format")?
-        } else {
-            Version::parse(&crate_info.latest_version).context("Invalid latest version")?
-        };
+        let target_version = self.resolve_version(&crate_info, version)?;
 
         let cache_key_versioned = format!("{}@{}", crate_name, target_version);
 
@@ -425,10 +454,69 @@ mod tests {
         let engine = DocEngine::new(temp_dir.path()).await.unwrap();
 
         // This test requires network access
-        if std::env::var("ENABLE_NETWORK_TESTS").is_ok() {
-            let results = engine.search_crates("serde", 5).await.unwrap();
-            assert!(!results.is_empty());
-            assert!(results.iter().any(|r| r.name == "serde"));
+        let results = engine.search_crates("serde", 5).await.unwrap();
+        assert!(!results.is_empty());
+        assert!(results.iter().any(|r| r.name == "serde"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_version_variants() {
+        let temp_dir = tempdir().unwrap();
+        let engine = DocEngine::new(temp_dir.path()).await.unwrap();
+
+        let ci = CrateInfo {
+            name: "dummy".into(),
+            latest_version: "1.2.3".into(),
+            description: None,
+            homepage: None,
+            repository: None,
+            documentation: None,
+            license: None,
+            downloads: 0,
+            recent_downloads: None,
+            feature_flags: Vec::new(),
+            dependencies: Vec::new(),
+            keywords: Vec::new(),
+            categories: Vec::new(),
+            versions: Vec::new(),
+            authors: Vec::new(),
+            created_at: None,
+            updated_at: None,
+        };
+
+        let cases = vec![
+            (None, "1.2.3"),
+            (Some(""), "1.2.3"),
+            (Some("latest"), "1.2.3"),
+            (Some("newest"), "1.2.3"),
+            (Some("current"), "1.2.3"),
+            (Some("*"), "1.2.3"),
+            (Some("v1.2.3"), "1.2.3"),
+            (Some("1.2"), "1.2.0"),
+            (Some("1.2.3"), "1.2.3"),
+        ];
+
+        for (spec, expected) in cases {
+            let resolved = engine.resolve_version(&ci, spec).unwrap();
+            assert_eq!(resolved, Version::parse(expected).unwrap());
         }
+    }
+
+    #[tokio::test]
+    async fn test_real_documentation_fetch() {
+
+        let temp_dir = tempdir().unwrap();
+        let engine = DocEngine::new(temp_dir.path()).await.unwrap();
+
+        let item = engine
+            .get_item_doc("itoa", "itoa::Buffer::from", Some("1.0.0"))
+            .await
+            .unwrap();
+
+        assert!(
+            item.rendered_markdown
+                .contains("Converts a value to a string slice"),
+            "Expected sentence is missing"
+        );
     }
 }

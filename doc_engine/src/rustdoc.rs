@@ -295,7 +295,6 @@ impl RustdocBuilder {
                 .push("Rustdoc JSON contains no items".to_string());
         }
 
-
         // Check for common issues
         let mut public_items = 0;
         let mut private_items = 0;

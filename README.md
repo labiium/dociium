@@ -76,13 +76,13 @@ docker run --rm -p 8800:8800 rust-docs-mcp
 ### Stdio Transport (Default)
 
 ```bash
-cargo run --release --bin rdocs-mcp-server
+cargo run --release --bin dociium
 ```
 
 ### WebSocket Transport
 
 ```bash
-RDOCS_WEBSOCKET=1 cargo run --release --bin rdocs-mcp-server --features websocket
+RDOCS_WEBSOCKET=1 cargo run --release --bin dociium --features websocket
 ```
 
 The server will listen on `127.0.0.1:8800` for WebSocket connections.
@@ -169,14 +169,8 @@ The server will listen on `127.0.0.1:8800` for WebSocket connections.
 ## 🧪 Testing
 
 ```bash
-# Run all tests
+# Run all tests including network operations
 cargo test
-
-# Run with network tests (requires internet)
-ENABLE_NETWORK_TESTS=1 cargo test
-
-# Run integration tests
-ENABLE_INTEGRATION_TESTS=1 cargo test
 ```
 
 ## 📁 Project Structure

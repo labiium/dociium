@@ -8,11 +8,11 @@ use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tar::Archive;
 use tempfile::TempDir;
-use std::fmt;
 use tracing::{debug, info, instrument, warn};
 
 use crate::types::*;
@@ -319,7 +319,6 @@ impl Fetcher {
         // TODO: Compare with expected checksum from API
         Ok(true)
     }
-
 }
 
 /// Download statistics for a crate
