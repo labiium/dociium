@@ -1,7 +1,7 @@
 //! Fetcher module for downloading and managing Rust crate data
 
 use anyhow::{Context, Result};
-use crates_io_api::{AsyncClient, CrateResponse, CratesQuery, SyncClient};
+use crates_io_api::{AsyncClient, CratesQuery};
 use flate2::read::GzDecoder;
 use governor::{Quota, RateLimiter};
 use reqwest::Client;
@@ -9,12 +9,10 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU32;
-use std::path::Path;
 use std::time::Duration;
 use tar::Archive;
 use tempfile::TempDir;
-use tokio::fs;
-use tokio::io::AsyncWriteExt;
+use std::fmt;
 use tracing::{debug, info, instrument, warn};
 
 use crate::types::*;
@@ -27,11 +25,16 @@ type ApiRateLimiter = RateLimiter<
 >;
 
 /// Fetcher handles downloading crates and metadata from crates.io
-#[derive(Debug)]
 pub struct Fetcher {
     client: AsyncClient,
     http_client: Client,
     rate_limiter: ApiRateLimiter,
+}
+
+impl fmt::Debug for Fetcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fetcher").finish()
+    }
 }
 
 impl Fetcher {
@@ -62,14 +65,17 @@ impl Fetcher {
     /// Search for crates on crates.io
     #[instrument(skip(self), fields(query = %query, limit = %limit))]
     pub async fn search_crates(&self, query: &str, limit: u32) -> Result<Vec<CrateSearchResult>> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         // Wait for rate limit
         self.rate_limiter.until_ready().await;
 
         debug!("Searching crates.io for: {} (limit: {})", query, limit);
 
-        let mut crates_query = CratesQuery::builder();
-        crates_query.search(query);
-        crates_query.page_size(limit.min(100)); // API max is 100
+        let crates_query = CratesQuery::builder()
+            .search(query)
+            .page_size(u64::from(limit.min(100)));
 
         let response = self
             .client
@@ -87,10 +93,10 @@ impl Fetcher {
                 repository: crate_data.repository,
                 documentation: crate_data.documentation,
                 homepage: crate_data.homepage,
-                keywords: crate_data.keywords,
-                categories: crate_data.categories,
-                created_at: crate_data.created_at.map(|dt| dt.to_rfc3339()),
-                updated_at: crate_data.updated_at.map(|dt| dt.to_rfc3339()),
+                keywords: crate_data.keywords.unwrap_or_default(),
+                categories: crate_data.categories.unwrap_or_default(),
+                created_at: Some(crate_data.created_at.to_rfc3339()),
+                updated_at: Some(crate_data.updated_at.to_rfc3339()),
             });
         }
 
@@ -122,7 +128,7 @@ impl Fetcher {
                 version: version.num.clone(),
                 downloads: version.downloads,
                 yanked: version.yanked,
-                created_at: version.created_at.map(|dt| dt.to_rfc3339()),
+                created_at: Some(version.created_at.to_rfc3339()),
             });
         }
 
@@ -137,12 +143,12 @@ impl Fetcher {
         let mut dependencies = Vec::new();
         if let Some(latest_version) = versions.first() {
             self.rate_limiter.until_ready().await;
-            if let Ok(deps_response) = self
+            if let Ok(deps) = self
                 .client
                 .crate_dependencies(name, &latest_version.num)
                 .await
             {
-                for dep in deps_response.dependencies {
+                for dep in deps {
                     dependencies.push(DependencyInfo {
                         name: dep.crate_id,
                         version_req: dep.req,
@@ -167,12 +173,12 @@ impl Fetcher {
             recent_downloads: crate_data.recent_downloads,
             feature_flags: Vec::new(), // TODO: Extract from Cargo.toml
             dependencies,
-            keywords: crate_data.keywords,
-            categories: crate_data.categories,
+            keywords: crate_data.keywords.unwrap_or_default(),
+            categories: crate_data.categories.unwrap_or_default(),
             versions: version_info,
             authors: Vec::new(), // TODO: Extract from metadata
-            created_at: crate_data.created_at.map(|dt| dt.to_rfc3339()),
-            updated_at: crate_data.updated_at.map(|dt| dt.to_rfc3339()),
+            created_at: Some(crate_data.created_at.to_rfc3339()),
+            updated_at: Some(crate_data.updated_at.to_rfc3339()),
         };
 
         info!("Retrieved crate info for: {}", name);
@@ -314,44 +320,6 @@ impl Fetcher {
         Ok(true)
     }
 
-    /// Get crate metadata including features
-    #[instrument(skip(self), fields(name = %name, version = %version))]
-    pub async fn get_crate_metadata(&self, name: &str, version: &Version) -> Result<CrateMetadata> {
-        debug!("Getting metadata for: {}@{}", name, version);
-
-        // Wait for rate limit
-        self.rate_limiter.until_ready().await;
-
-        let response =
-            self.client.get_crate(name).await.with_context(|| {
-                format!("Failed to get crate metadata for: {}@{}", name, version)
-            })?;
-
-        // Find the specific version
-        let version_data = response
-            .versions
-            .iter()
-            .find(|v| v.num == version.to_string())
-            .ok_or_else(|| anyhow::anyhow!("Version {} not found for crate {}", version, name))?;
-
-        let metadata = CrateMetadata {
-            name: name.to_string(),
-            version: version.clone(),
-            features: version_data.features.clone(),
-            authors: Vec::new(), // TODO: Extract from version data
-            license: version_data.license.clone(),
-            description: response.crate_data.description,
-            homepage: response.crate_data.homepage,
-            repository: response.crate_data.repository,
-            documentation: response.crate_data.documentation,
-            readme: response.crate_data.readme,
-            keywords: response.crate_data.keywords,
-            categories: response.crate_data.categories,
-        };
-
-        debug!("Retrieved metadata for: {}@{}", name, version);
-        Ok(metadata)
-    }
 }
 
 /// Download statistics for a crate
@@ -359,23 +327,6 @@ impl Fetcher {
 pub struct CrateDownloadStats {
     pub total_downloads: u64,
     pub recent_downloads: Option<u64>,
-}
-
-/// Metadata for a specific crate version
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrateMetadata {
-    pub name: String,
-    pub version: Version,
-    pub features: std::collections::BTreeMap<String, Vec<String>>,
-    pub authors: Vec<String>,
-    pub license: Option<String>,
-    pub description: Option<String>,
-    pub homepage: Option<String>,
-    pub repository: Option<String>,
-    pub documentation: Option<String>,
-    pub readme: Option<String>,
-    pub keywords: Vec<String>,
-    pub categories: Vec<String>,
 }
 
 impl Default for Fetcher {

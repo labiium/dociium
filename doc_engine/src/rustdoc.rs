@@ -295,11 +295,6 @@ impl RustdocBuilder {
                 .push("Rustdoc JSON contains no items".to_string());
         }
 
-        if rustdoc_crate.root.is_none() {
-            report
-                .warnings
-                .push("Rustdoc JSON has no root item".to_string());
-        }
 
         // Check for common issues
         let mut public_items = 0;
