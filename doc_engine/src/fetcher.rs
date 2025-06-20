@@ -1,215 +1,356 @@
 //! Fetcher module for downloading and managing Rust crate data
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use crates_io_api::{AsyncClient, CrateResponse, CratesQuery, SyncClient};
+use flate2::read::GzDecoder;
+use governor::{Quota, RateLimiter};
+use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
-
+use sha2::{Digest, Sha256};
+use std::num::NonZeroU32;
+use std::path::Path;
+use std::time::Duration;
+use tar::Archive;
 use tempfile::TempDir;
-use tracing::{debug, info};
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
+use tracing::{debug, info, instrument, warn};
 
 use crate::types::*;
+
+/// Rate limiter for crates.io API calls (10 requests per second)
+type ApiRateLimiter = RateLimiter<
+    governor::state::direct::NotKeyed,
+    governor::state::InMemoryState,
+    governor::clock::QuantaClock,
+>;
 
 /// Fetcher handles downloading crates and metadata from crates.io
 #[derive(Debug)]
 pub struct Fetcher {
-    _placeholder: (),
+    client: AsyncClient,
+    http_client: Client,
+    rate_limiter: ApiRateLimiter,
 }
 
 impl Fetcher {
     /// Create a new fetcher instance
     pub fn new() -> Self {
-        Self { _placeholder: () }
+        let client = AsyncClient::new(
+            "rdocs-mcp (https://github.com/example/rdocs-mcp)",
+            Duration::from_secs(30),
+        )
+        .expect("Failed to create crates.io client");
+
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .gzip(true)
+            .build()
+            .expect("Failed to create HTTP client");
+
+        // Rate limit: 10 requests per second
+        let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(10).unwrap()));
+
+        Self {
+            client,
+            http_client,
+            rate_limiter,
+        }
     }
 
-    /// Search for crates on crates.io (mock implementation)
+    /// Search for crates on crates.io
+    #[instrument(skip(self), fields(query = %query, limit = %limit))]
     pub async fn search_crates(&self, query: &str, limit: u32) -> Result<Vec<CrateSearchResult>> {
-        debug!("Mock searching crates.io for: {} (limit: {})", query, limit);
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        debug!("Searching crates.io for: {} (limit: {})", query, limit);
+
+        let mut crates_query = CratesQuery::builder();
+        crates_query.search(query);
+        crates_query.page_size(limit.min(100)); // API max is 100
+
+        let response = self
+            .client
+            .crates(crates_query.build())
+            .await
+            .context("Failed to search crates")?;
 
         let mut results = Vec::new();
-
-        if !query.is_empty() && limit > 0 {
-            // Return mock results for demonstration
-            for i in 0..std::cmp::min(limit, 3) {
-                results.push(CrateSearchResult {
-                    name: format!("{}-mock-{}", query, i + 1),
-                    latest_version: "1.0.0".to_string(),
-                    description: Some(format!("Mock crate for {} search", query)),
-                    downloads: 1000 * (i + 1) as u64,
-                    repository: Some(format!("https://github.com/mock/{}-mock-{}", query, i + 1)),
-                    documentation: Some(format!("https://docs.rs/{}-mock-{}", query, i + 1)),
-                    homepage: None,
-                    keywords: vec![query.to_string(), "mock".to_string()],
-                    categories: vec!["development-tools".to_string()],
-                    created_at: Some("2023-01-01T00:00:00Z".to_string()),
-                    updated_at: Some("2024-01-01T00:00:00Z".to_string()),
-                });
-            }
+        for crate_data in response.crates {
+            results.push(CrateSearchResult {
+                name: crate_data.name,
+                latest_version: crate_data.max_version,
+                description: crate_data.description,
+                downloads: crate_data.downloads,
+                repository: crate_data.repository,
+                documentation: crate_data.documentation,
+                homepage: crate_data.homepage,
+                keywords: crate_data.keywords,
+                categories: crate_data.categories,
+                created_at: crate_data.created_at.map(|dt| dt.to_rfc3339()),
+                updated_at: crate_data.updated_at.map(|dt| dt.to_rfc3339()),
+            });
         }
 
-        info!("Found {} mock crates for query: {}", results.len(), query);
+        info!("Found {} crates for query: {}", results.len(), query);
         Ok(results)
     }
 
-    /// Get detailed information about a specific crate (mock implementation)
+    /// Get detailed information about a specific crate
+    #[instrument(skip(self), fields(name = %name))]
     pub async fn crate_info(&self, name: &str) -> Result<CrateInfo> {
-        debug!("Mock fetching crate info for: {}", name);
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        debug!("Fetching crate info for: {}", name);
+
+        let response = self
+            .client
+            .get_crate(name)
+            .await
+            .with_context(|| format!("Failed to get crate info for: {}", name))?;
+
+        let crate_data = response.crate_data;
+        let versions = response.versions;
+
+        // Get version information
+        let mut version_info = Vec::new();
+        for version in &versions {
+            version_info.push(VersionInfo {
+                version: version.num.clone(),
+                downloads: version.downloads,
+                yanked: version.yanked,
+                created_at: version.created_at.map(|dt| dt.to_rfc3339()),
+            });
+        }
+
+        // Sort versions by semver (latest first)
+        version_info.sort_by(|a, b| {
+            let ver_a = Version::parse(&a.version).unwrap_or_else(|_| Version::new(0, 0, 0));
+            let ver_b = Version::parse(&b.version).unwrap_or_else(|_| Version::new(0, 0, 0));
+            ver_b.cmp(&ver_a)
+        });
+
+        // Get dependencies for the latest version
+        let mut dependencies = Vec::new();
+        if let Some(latest_version) = versions.first() {
+            self.rate_limiter.until_ready().await;
+            if let Ok(deps_response) = self
+                .client
+                .crate_dependencies(name, &latest_version.num)
+                .await
+            {
+                for dep in deps_response.dependencies {
+                    dependencies.push(DependencyInfo {
+                        name: dep.crate_id,
+                        version_req: dep.req,
+                        kind: dep.kind,
+                        optional: dep.optional,
+                        default_features: dep.default_features,
+                        features: dep.features,
+                    });
+                }
+            }
+        }
 
         let crate_info = CrateInfo {
-            name: name.to_string(),
-            latest_version: "1.0.0".to_string(),
-            description: Some(format!("Mock crate description for {}", name)),
-            homepage: Some(format!("https://{}.rs", name)),
-            repository: Some(format!("https://github.com/mock/{}", name)),
-            documentation: Some(format!("https://docs.rs/{}", name)),
-            license: Some("MIT OR Apache-2.0".to_string()),
-            downloads: 50000,
-            recent_downloads: Some(1500),
-            feature_flags: vec!["default".to_string(), "serde".to_string()],
-            dependencies: vec![DependencyInfo {
-                name: "serde".to_string(),
-                version_req: "1.0".to_string(),
-                kind: "normal".to_string(),
-                optional: false,
-                default_features: true,
-                features: vec![],
-            }],
-            keywords: vec!["rust".to_string(), "library".to_string()],
-            categories: vec!["development-tools".to_string()],
-            versions: vec![
-                VersionInfo {
-                    version: "1.0.0".to_string(),
-                    downloads: 50000,
-                    yanked: false,
-                    created_at: Some("2023-01-01T00:00:00Z".to_string()),
-                },
-                VersionInfo {
-                    version: "0.9.0".to_string(),
-                    downloads: 25000,
-                    yanked: false,
-                    created_at: Some("2022-06-01T00:00:00Z".to_string()),
-                },
-            ],
-            authors: vec!["Mock Author <mock@example.com>".to_string()],
-            created_at: Some("2022-01-01T00:00:00Z".to_string()),
-            updated_at: Some("2024-01-01T00:00:00Z".to_string()),
+            name: crate_data.name,
+            latest_version: crate_data.max_version,
+            description: crate_data.description,
+            homepage: crate_data.homepage,
+            repository: crate_data.repository,
+            documentation: crate_data.documentation,
+            license: crate_data.license,
+            downloads: crate_data.downloads,
+            recent_downloads: crate_data.recent_downloads,
+            feature_flags: Vec::new(), // TODO: Extract from Cargo.toml
+            dependencies,
+            keywords: crate_data.keywords,
+            categories: crate_data.categories,
+            versions: version_info,
+            authors: Vec::new(), // TODO: Extract from metadata
+            created_at: crate_data.created_at.map(|dt| dt.to_rfc3339()),
+            updated_at: crate_data.updated_at.map(|dt| dt.to_rfc3339()),
         };
 
-        info!("Retrieved mock crate info for: {}", name);
+        info!("Retrieved crate info for: {}", name);
         Ok(crate_info)
     }
 
-    /// Download and extract a crate to a temporary directory (mock implementation)
+    /// Download and extract a crate to a temporary directory
+    #[instrument(skip(self), fields(name = %name, version = %version))]
     pub async fn download_crate(&self, name: &str, version: &Version) -> Result<TempDir> {
-        info!("Mock downloading crate: {}@{}", name, version);
+        info!("Downloading crate: {}@{}", name, version);
 
-        // Create a temporary directory with mock content
-        let temp_dir = TempDir::new()?;
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
 
-        // Create a basic Cargo.toml
-        let cargo_toml = format!(
-            r#"[package]
-name = "{}"
-version = "{}"
-edition = "2021"
-description = "Mock crate for testing"
-
-[dependencies]
-serde = "1.0"
-"#,
+        // Get download URL
+        let download_url = format!(
+            "https://crates.io/api/v1/crates/{}/{}/download",
             name, version
         );
 
-        // Create a basic lib.rs
-        let lib_rs = format!(
-            r#"//! Mock crate {} documentation
-//!
-//! This is a mock implementation for testing purposes.
+        // Download the crate tarball
+        let response = self
+            .http_client
+            .get(&download_url)
+            .send()
+            .await
+            .with_context(|| format!("Failed to download crate {}@{}", name, version))?;
 
-/// Main struct for {}
-pub struct {} {{
-    pub value: u32,
-}}
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "Failed to download crate {}@{}: HTTP {}",
+                name,
+                version,
+                response.status()
+            ));
+        }
 
-impl {} {{
-    /// Create a new instance
-    pub fn new(value: u32) -> Self {{
-        Self {{ value }}
-    }}
+        // Get the response bytes
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read crate download response")?;
 
-    /// Get the value
-    pub fn get(&self) -> u32 {{
-        self.value
-    }}
-}}
+        // Verify checksum if available
+        // TODO: Get checksum from API and verify
 
-/// Mock trait for demonstration
-pub trait MockTrait {{
-    /// Mock method
-    fn mock_method(&self) -> String;
-}}
+        // Create temporary directory
+        let temp_dir = TempDir::new().context("Failed to create temporary directory")?;
 
-impl MockTrait for {} {{
-    fn mock_method(&self) -> String {{
-        format!("Mock implementation: {{}}", self.value)
-    }}
-}}
+        // Extract the tarball
+        let gz_decoder = GzDecoder::new(bytes.as_ref());
+        let mut archive = Archive::new(gz_decoder);
 
-#[cfg(test)]
-mod tests {{
-    use super::*;
+        archive
+            .unpack(temp_dir.path())
+            .with_context(|| format!("Failed to extract crate {}@{}", name, version))?;
 
-    #[test]
-    fn test_new() {{
-        let instance = {}::new(42);
-        assert_eq!(instance.get(), 42);
-    }}
-}}
-"#,
-            name,
-            name,
-            capitalize_first_letter(name),
-            capitalize_first_letter(name),
-            capitalize_first_letter(name),
-            capitalize_first_letter(name)
+        info!(
+            "Successfully downloaded and extracted crate: {}@{}",
+            name, version
         );
-
-        // Write the files
-        std::fs::write(temp_dir.path().join("Cargo.toml"), cargo_toml)?;
-        std::fs::create_dir_all(temp_dir.path().join("src"))?;
-        std::fs::write(temp_dir.path().join("src").join("lib.rs"), lib_rs)?;
-
-        info!("Successfully created mock crate: {}@{}", name, version);
         Ok(temp_dir)
     }
 
-    /// Get the latest stable version of a crate (mock implementation)
+    /// Get the latest stable version of a crate
+    #[instrument(skip(self), fields(name = %name))]
     pub async fn get_latest_version(&self, name: &str) -> Result<Version> {
-        debug!("Mock getting latest version for: {}", name);
-        let version = Version::parse("1.0.0")?;
-        debug!("Mock latest version for {}: {}", name, version);
+        debug!("Getting latest version for: {}", name);
+
+        let crate_info = self.crate_info(name).await?;
+        let version = Version::parse(&crate_info.latest_version)
+            .with_context(|| format!("Invalid version format: {}", crate_info.latest_version))?;
+
+        debug!("Latest version for {}: {}", name, version);
         Ok(version)
     }
 
-    /// Check if a crate exists (mock implementation)
+    /// Check if a crate exists
+    #[instrument(skip(self), fields(name = %name))]
     pub async fn crate_exists(&self, name: &str) -> Result<bool> {
-        debug!("Mock checking if crate exists: {}", name);
-        // Mock: all crates exist except those with "nonexistent" in the name
-        let exists = !name.contains("nonexistent");
-        debug!("Mock crate exists {}: {}", name, exists);
-        Ok(exists)
+        debug!("Checking if crate exists: {}", name);
+
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        match self.client.get_crate(name).await {
+            Ok(_) => {
+                debug!("Crate exists: {}", name);
+                Ok(true)
+            }
+            Err(crates_io_api::Error::NotFound(_)) => {
+                debug!("Crate does not exist: {}", name);
+                Ok(false)
+            }
+            Err(e) => {
+                warn!("Error checking crate existence for {}: {}", name, e);
+                Err(e.into())
+            }
+        }
     }
 
-    /// Get crate statistics (mock implementation)
+    /// Get crate download statistics
+    #[instrument(skip(self), fields(name = %name))]
     pub async fn get_crate_stats(&self, name: &str) -> Result<CrateDownloadStats> {
-        debug!("Mock getting download stats for: {}", name);
+        debug!("Getting download stats for: {}", name);
 
+        let crate_info = self.crate_info(name).await?;
         let stats = CrateDownloadStats {
-            total_downloads: 50000,
-            recent_downloads: Some(1500),
+            total_downloads: crate_info.downloads,
+            recent_downloads: crate_info.recent_downloads,
         };
 
-        debug!("Mock retrieved stats for {}: {:?}", name, stats);
+        debug!("Retrieved stats for {}: {:?}", name, stats);
         Ok(stats)
+    }
+
+    /// Verify downloaded crate against checksum
+    #[instrument(skip(self, data), fields(name = %name, version = %version))]
+    pub async fn verify_crate_checksum(
+        &self,
+        name: &str,
+        version: &Version,
+        data: &[u8],
+    ) -> Result<bool> {
+        // TODO: Get expected checksum from crates.io API
+        // For now, just compute the SHA256 hash
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let hash = hasher.finalize();
+
+        debug!(
+            "Computed SHA256 for {}@{}: {}",
+            name,
+            version,
+            hex::encode(hash)
+        );
+
+        // TODO: Compare with expected checksum from API
+        Ok(true)
+    }
+
+    /// Get crate metadata including features
+    #[instrument(skip(self), fields(name = %name, version = %version))]
+    pub async fn get_crate_metadata(&self, name: &str, version: &Version) -> Result<CrateMetadata> {
+        debug!("Getting metadata for: {}@{}", name, version);
+
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        let response =
+            self.client.get_crate(name).await.with_context(|| {
+                format!("Failed to get crate metadata for: {}@{}", name, version)
+            })?;
+
+        // Find the specific version
+        let version_data = response
+            .versions
+            .iter()
+            .find(|v| v.num == version.to_string())
+            .ok_or_else(|| anyhow::anyhow!("Version {} not found for crate {}", version, name))?;
+
+        let metadata = CrateMetadata {
+            name: name.to_string(),
+            version: version.clone(),
+            features: version_data.features.clone(),
+            authors: Vec::new(), // TODO: Extract from version data
+            license: version_data.license.clone(),
+            description: response.crate_data.description,
+            homepage: response.crate_data.homepage,
+            repository: response.crate_data.repository,
+            documentation: response.crate_data.documentation,
+            readme: response.crate_data.readme,
+            keywords: response.crate_data.keywords,
+            categories: response.crate_data.categories,
+        };
+
+        debug!("Retrieved metadata for: {}@{}", name, version);
+        Ok(metadata)
     }
 }
 
@@ -220,23 +361,27 @@ pub struct CrateDownloadStats {
     pub recent_downloads: Option<u64>,
 }
 
+/// Metadata for a specific crate version
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrateMetadata {
+    pub name: String,
+    pub version: Version,
+    pub features: std::collections::BTreeMap<String, Vec<String>>,
+    pub authors: Vec<String>,
+    pub license: Option<String>,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+    pub repository: Option<String>,
+    pub documentation: Option<String>,
+    pub readme: Option<String>,
+    pub keywords: Vec<String>,
+    pub categories: Vec<String>,
+}
+
 impl Default for Fetcher {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Helper function to capitalize the first letter of a string
-fn capitalize_first_letter(s: &str) -> String {
-    s.split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -247,11 +392,11 @@ mod tests {
     fn test_fetcher_creation() {
         let _fetcher = Fetcher::new();
         // Just test that we can create the fetcher without panicking
-        assert!(true);
     }
 
     #[tokio::test]
-    async fn test_mock_crate_exists() {
+    #[cfg(feature = "network-tests")]
+    async fn test_real_crate_exists() {
         let fetcher = Fetcher::new();
 
         // Test with a crate that should exist
@@ -260,65 +405,65 @@ mod tests {
 
         // Test with a crate that should not exist
         let exists = fetcher
-            .crate_exists("nonexistent-crate-12345")
+            .crate_exists("nonexistent-crate-rdocs-mcp-12345")
             .await
             .unwrap();
         assert!(!exists);
     }
 
     #[tokio::test]
-    async fn test_mock_search_crates() {
+    #[cfg(feature = "network-tests")]
+    async fn test_real_search_crates() {
         let fetcher = Fetcher::new();
-        let results = fetcher.search_crates("test", 5).await.unwrap();
+        let results = fetcher.search_crates("serde", 5).await.unwrap();
 
         assert!(!results.is_empty());
         assert!(results.len() <= 5);
-        assert!(results.iter().all(|r| r.name.contains("test")));
+        assert!(results.iter().any(|r| r.name == "serde"));
     }
 
     #[tokio::test]
-    async fn test_mock_get_latest_version() {
+    #[cfg(feature = "network-tests")]
+    async fn test_real_get_latest_version() {
         let fetcher = Fetcher::new();
         let version = fetcher.get_latest_version("serde").await.unwrap();
 
-        assert_eq!(version.major, 1);
-        assert_eq!(version.minor, 0);
-        assert_eq!(version.patch, 0);
+        assert!(version.major >= 1);
         assert!(version.pre.is_empty()); // Should be a stable version
     }
 
     #[tokio::test]
-    async fn test_mock_download_crate() {
+    #[cfg(feature = "network-tests")]
+    async fn test_real_download_crate() {
         let fetcher = Fetcher::new();
         let version = Version::parse("1.0.0").unwrap();
-        let temp_dir = fetcher
-            .download_crate("test-crate", &version)
-            .await
-            .unwrap();
+        let temp_dir = fetcher.download_crate("itoa", &version).await.unwrap();
 
         // Verify that files were created
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        let lib_rs = temp_dir.path().join("src").join("lib.rs");
+        let extracted_files: Vec<_> = walkdir::WalkDir::new(temp_dir.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .collect();
 
-        assert!(cargo_toml.exists());
-        assert!(lib_rs.exists());
+        assert!(!extracted_files.is_empty());
 
-        // Verify content
-        let cargo_content = std::fs::read_to_string(&cargo_toml).unwrap();
-        assert!(cargo_content.contains("test-crate"));
-        assert!(cargo_content.contains("1.0.0"));
-
-        let lib_content = std::fs::read_to_string(&lib_rs).unwrap();
-        assert!(lib_content.contains("TestCrate"));
-        assert!(lib_content.contains("Mock crate test-crate documentation"));
+        // Look for Cargo.toml
+        let has_cargo_toml = extracted_files
+            .iter()
+            .any(|entry| entry.path().file_name().unwrap() == "Cargo.toml");
+        assert!(has_cargo_toml);
     }
 
-    #[test]
-    fn test_capitalize_first_letter() {
-        assert_eq!(capitalize_first_letter("hello"), "Hello");
-        assert_eq!(capitalize_first_letter("world"), "World");
-        assert_eq!(capitalize_first_letter(""), "");
-        assert_eq!(capitalize_first_letter("a"), "A");
-        assert_eq!(capitalize_first_letter("test-crate"), "TestCrate");
+    #[tokio::test]
+    #[cfg(feature = "network-tests")]
+    async fn test_real_crate_info() {
+        let fetcher = Fetcher::new();
+        let info = fetcher.crate_info("serde").await.unwrap();
+
+        assert_eq!(info.name, "serde");
+        assert!(!info.latest_version.is_empty());
+        assert!(info.downloads > 0);
+        assert!(!info.versions.is_empty());
     }
 }

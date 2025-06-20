@@ -44,14 +44,14 @@ crates_io_api = "0.8"
 # Rustdoc types
 rustdoc-types = "0.26"
 
-# Search index - temporarily disabled
-# tantivy = "0.21"
+# Search index
+tantivy = "0.21"
 
 # Database
-# rocksdb = "0.22" # Temporarily disabled due to build issues
+rocksdb = "0.22"
 
-# Compression - temporarily disabled
-# flate2 = "1.0"
+# Compression
+flate2 = "1.0"
 
 # Hashing
 sha2 = "0.10"
@@ -72,3 +72,27 @@ assert_cmd = "2.0"
 
 # Additional dependencies
 bincode = "1.3"
+
+# Async utilities
+dashmap = "5.5"
+lru = "0.12"
+
+# Security
+seccompiler = "0.4"
+
+# Rate limiting and concurrency
+semaphore = "0.1"
+
+# Observability
+opentelemetry = "0.20"
+opentelemetry-otlp = "0.13"
+prometheus = "0.13"
+
+# HTTP client features
+reqwest = { version = "0.12", features = ["json", "stream", "gzip"] }
+
+# Tar/gzip handling
+tar = "0.4"
+
+# Hex encoding for checksums
+hex = "0.4"

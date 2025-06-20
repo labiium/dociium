@@ -5,6 +5,10 @@ edition = "2021"
 description = "MCP server for Rust documentation queries"
 license = "MIT OR Apache-2.0"
 
+[lib]
+name = "mcp_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rdocs-mcp-server"
 path = "src/main.rs"
@@ -23,6 +27,11 @@ serde = { workspace = true }
 # Local crates
 doc_engine = { path = "../doc_engine" }
 index_core = { path = "../index_core" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = "0.4"
+assert_cmd = { workspace = true }
 
 [features]
 default = ["stdio"]
