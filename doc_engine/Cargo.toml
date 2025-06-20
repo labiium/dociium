@@ -37,6 +37,7 @@ bytes = "1.5"
 lru = "0.12"
 bincode = { workspace = true }
 chrono = { version = "0.4", features = ["alloc"] }
+scraper = "0.23"
 
 [dev-dependencies]
 insta = { workspace = true }
