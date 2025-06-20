@@ -7,7 +7,7 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 ### Core Functionality
 - **📦 Crate Search**: Search and discover Rust crates from crates.io
 - **📖 Documentation Access**: Retrieve formatted documentation for any item in a crate
-- **🔍 Symbol Search**: Full-text search across crate symbols with fuzzy matching
+- **🔍 Symbol Search**: Full-text search across crate symbols with fuzzy matching *(feature gated until Tantivy support lands)*
 - **🧬 Trait Exploration**: List trait implementations and type relationships
 - **📝 Source Code**: Access source code snippets with context
 - **⚡ Smart Caching**: Intelligent disk and memory caching for fast responses
