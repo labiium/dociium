@@ -110,113 +110,111 @@ impl RustdocBuilder {
 
         info!("Executing rustdoc command: {:?}", cmd);
 
-        // Execute with timeout and sandboxing
+        // Execute the command
         let output = self.execute_rustdoc_command(&mut cmd).await?;
 
+        // Check for errors in output
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-
-            warn!("Rustdoc failed with status: {}", output.status);
-            warn!("Stdout: {}", stdout);
-            warn!("Stderr: {}", stderr);
-
             return Err(anyhow::anyhow!(
-                "Rustdoc command failed with status {}: {}",
-                output.status,
-                stderr
+                "Rustdoc command failed with exit code {}: {}",
+                output.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&output.stderr)
             ));
         }
 
-        // Read and parse the generated JSON
-        if !json_output_path.exists() {
-            return Err(anyhow::anyhow!(
-                "Rustdoc JSON output not found at: {:?}",
-                json_output_path
-            ));
-        }
-
-        let json_content = fs::read_to_string(&json_output_path)
-            .await
-            .context("Failed to read rustdoc JSON output")?;
-
-        let rustdoc_crate: RustdocCrate =
-            serde_json::from_str(&json_content).context("Failed to parse rustdoc JSON output")?;
-
-        info!(
-            "Successfully built rustdoc JSON with {} items",
-            rustdoc_crate.index.len()
-        );
-
-        // Validate the output
-        let validation_report = self.validate_rustdoc_json(&rustdoc_crate)?;
-        if !validation_report.is_valid() {
-            warn!(
-                "Rustdoc validation warnings: {:?}",
-                validation_report.warnings
-            );
-        }
+        // Parse the JSON output
+        let rustdoc_crate: RustdocCrate = serde_json::from_slice(&output.stdout)
+            .context("Failed to parse rustdoc JSON output")?;
 
         Ok(rustdoc_crate)
     }
 
-    /// Build the cargo rustdoc command
     fn build_rustdoc_command(&self, crate_dir: &Path, output_dir: &Path) -> Result<Command> {
-        let mut cmd = Command::new("cargo");
-
-        // Add toolchain prefix
-        cmd.arg(format!("+{}", self.config.toolchain));
-        cmd.arg("rustdoc");
-
-        // Set working directory
-        cmd.current_dir(crate_dir);
-
-        // Basic flags
-        cmd.arg("--lib");
-        cmd.arg("--manifest-path").arg(crate_dir.join("Cargo.toml"));
-
+        // Cargo arguments
+        let mut cargo_args = vec![
+            format!("+{}", self.config.toolchain),
+            "rustdoc".to_string(),
+            "--lib".to_string(),
+            "--manifest-path".to_string(),
+            crate_dir.join("Cargo.toml").to_string_lossy().to_string(),
+        ];
         // Features
         if self.config.all_features {
-            cmd.arg("--all-features");
+            cargo_args.push("--all-features".to_string());
         } else {
             if !self.config.default_features {
-                cmd.arg("--no-default-features");
+                cargo_args.push("--no-default-features".to_string());
             }
             if !self.config.features.is_empty() {
-                cmd.arg("--features").arg(self.config.features.join(","));
+                cargo_args.push("--features".to_string());
+                cargo_args.push(self.config.features.join(","));
             }
         }
-
-        // Target
         if let Some(ref target) = self.config.target {
-            cmd.arg("--target").arg(target);
+            cargo_args.push("--target".to_string());
+            cargo_args.push(target.clone());
         }
-
-        // Rustdoc-specific flags
+        // Rustdoc arguments
+        let mut rustdoc_args = vec![
+            "-Zunstable-options".to_string(),
+            "--output-format".to_string(),
+            "json".to_string(),
+            "-o".to_string(),
+            output_dir.to_string_lossy().to_string(),
+        ];
+        // Additional rustdoc flags, but skip any -o/--out-dir and their values to avoid duplicates
+        let mut rustdoc_flags_iter = self.config.rustdoc_flags.iter().peekable();
+        while let Some(flag) = rustdoc_flags_iter.next() {
+            if flag == "-o" || flag == "--out-dir" {
+                rustdoc_flags_iter.next();
+                continue;
+            }
+            if flag.starts_with("-o=") || flag.starts_with("--out-dir=") {
+                continue;
+            }
+            rustdoc_args.push(flag.clone());
+        }
+        // Check for duplicate -o/--out-dir in rustdoc_args
+        let mut out_dir_count = 0;
+        let mut prev_is_out_flag = false;
+        for arg in &rustdoc_args {
+            if prev_is_out_flag {
+                out_dir_count += 1;
+                prev_is_out_flag = false;
+            }
+            if arg == "-o" || arg == "--out-dir" {
+                prev_is_out_flag = true;
+            }
+            if arg.starts_with("-o=") || arg.starts_with("--out-dir=") {
+                out_dir_count += 1;
+            }
+        }
+        if out_dir_count > 1 {
+            panic!("Duplicate -o/--out-dir detected in rustdoc args: {:?}", rustdoc_args);
+        }
+        debug!("Full cargo rustdoc command: cargo {:?} -- {:?}", cargo_args, rustdoc_args);
+        // Now actually build the command
+        let mut cmd = Command::new("cargo");
+        for arg in &cargo_args {
+            cmd.arg(arg);
+        }
         cmd.arg("--");
-        cmd.arg("-Zunstable-options");
-        cmd.arg("--output-format").arg("json");
-        cmd.arg("-o").arg(output_dir);
-
-        // Additional rustdoc flags
-        for flag in &self.config.rustdoc_flags {
-            cmd.arg(flag);
+        for arg in &rustdoc_args {
+            cmd.arg(arg);
         }
-
+        // Set working directory
+        cmd.current_dir(crate_dir);
         // Environment variables
         for (key, value) in &self.config.env_vars {
             cmd.env(key, value);
         }
-
         // Security: Set restrictive environment
         cmd.env("CARGO_HTTP_TIMEOUT", "30");
         cmd.env("CARGO_HTTP_LOW_SPEED_LIMIT", "1000");
         cmd.env("CARGO_NET_RETRY", "2");
-
         // Stdio configuration
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-
         Ok(cmd)
     }
 
@@ -239,7 +237,7 @@ impl RustdocBuilder {
 
     /// Find the root directory of the crate (handles nested directories in tarballs)
     async fn find_crate_root(&self) -> Result<PathBuf> {
-        let mut current_dir = self.crate_dir.clone();
+        let current_dir = self.crate_dir.clone();
 
         // Check if current directory has Cargo.toml
         if current_dir.join("Cargo.toml").exists() {
@@ -467,7 +465,6 @@ version = "1.0.0"
     }
 
     #[tokio::test]
-    #[cfg(feature = "integration-tests")]
     async fn test_build_json_real() {
         // This test requires nightly Rust and network access
         let temp_dir = create_test_crate("integration-test", "1.0.0")
@@ -479,7 +476,7 @@ version = "1.0.0"
         match builder.build_json().await {
             Ok(rustdoc_crate) => {
                 assert!(!rustdoc_crate.index.is_empty());
-                assert!(rustdoc_crate.root.is_some());
+                // root is always present (Id), so no need to check is_some()
             }
             Err(e) => {
                 // Expected if nightly is not available

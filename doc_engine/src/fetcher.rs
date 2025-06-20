@@ -168,7 +168,7 @@ impl Fetcher {
             homepage: crate_data.homepage,
             repository: crate_data.repository,
             documentation: crate_data.documentation,
-            license: crate_data.license,
+            license: versions.first().and_then(|v| v.license.clone()),
             downloads: crate_data.downloads,
             recent_downloads: crate_data.recent_downloads,
             feature_flags: Vec::new(), // TODO: Extract from Cargo.toml
@@ -345,7 +345,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "network-tests")]
     async fn test_real_crate_exists() {
         let fetcher = Fetcher::new();
 
@@ -362,7 +361,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "network-tests")]
     async fn test_real_search_crates() {
         let fetcher = Fetcher::new();
         let results = fetcher.search_crates("serde", 5).await.unwrap();
@@ -373,7 +371,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "network-tests")]
     async fn test_real_get_latest_version() {
         let fetcher = Fetcher::new();
         let version = fetcher.get_latest_version("serde").await.unwrap();
@@ -383,7 +380,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "network-tests")]
     async fn test_real_download_crate() {
         let fetcher = Fetcher::new();
         let version = Version::parse("1.0.0").unwrap();
@@ -406,7 +402,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "network-tests")]
     async fn test_real_crate_info() {
         let fetcher = Fetcher::new();
         let info = fetcher.crate_info("serde").await.unwrap();
