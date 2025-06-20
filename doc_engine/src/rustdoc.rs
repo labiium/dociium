@@ -44,7 +44,7 @@ impl Default for RustdocConfig {
             features: Vec::new(),
             default_features: true,
             all_features: false,
-            toolchain: "nightly".to_string(), // JSON output requires nightly
+            toolchain: "nightly-2024-01-15".to_string(), // Pinned toolchain for stable JSON format
             rustdoc_flags: Vec::new(),
             env_vars: std::collections::HashMap::new(),
         }
@@ -100,7 +100,7 @@ impl RustdocBuilder {
 
         // Create temporary directory for output
         let temp_output_dir = TempDir::new().context("Failed to create temp output directory")?;
-        let json_output_path = temp_output_dir
+        let _json_output_path = temp_output_dir
             .path()
             .join("doc")
             .join(format!("{}.json", crate_name));
@@ -122,8 +122,13 @@ impl RustdocBuilder {
             ));
         }
 
+        // Read the generated JSON file
+        let json_bytes = fs::read(&_json_output_path)
+            .await
+            .with_context(|| format!("Failed to read rustdoc JSON output at {:?}", _json_output_path))?;
+
         // Parse the JSON output
-        let rustdoc_crate: RustdocCrate = serde_json::from_slice(&output.stdout)
+        let rustdoc_crate: RustdocCrate = serde_json::from_slice(&json_bytes)
             .context("Failed to parse rustdoc JSON output")?;
 
         Ok(rustdoc_crate)
@@ -154,13 +159,14 @@ impl RustdocBuilder {
             cargo_args.push("--target".to_string());
             cargo_args.push(target.clone());
         }
+        // Use a custom target directory for rustdoc output
+        cargo_args.push("--target-dir".to_string());
+        cargo_args.push(output_dir.to_string_lossy().to_string());
         // Rustdoc arguments
         let mut rustdoc_args = vec![
             "-Zunstable-options".to_string(),
             "--output-format".to_string(),
             "json".to_string(),
-            "-o".to_string(),
-            output_dir.to_string_lossy().to_string(),
         ];
         // Additional rustdoc flags, but skip any -o/--out-dir and their values to avoid duplicates
         let mut rustdoc_flags_iter = self.config.rustdoc_flags.iter().peekable();
@@ -489,7 +495,7 @@ version = "1.0.0"
     fn test_rustdoc_config_default() {
         let config = RustdocConfig::default();
         assert_eq!(config.timeout_seconds, 300);
-        assert_eq!(config.toolchain, "nightly");
+        assert_eq!(config.toolchain, "nightly-2024-01-15");
         assert!(config.default_features);
         assert!(!config.all_features);
     }

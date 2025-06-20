@@ -36,6 +36,7 @@ url = "2.5"
 bytes = "1.5"
 lru = "0.12"
 bincode = { workspace = true }
+chrono = { version = "0.4", features = ["alloc"] }
 
 [dev-dependencies]
 insta = { workspace = true }

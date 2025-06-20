@@ -41,7 +41,7 @@ impl Fetcher {
     /// Create a new fetcher instance
     pub fn new() -> Self {
         let client = AsyncClient::new(
-            "rdocs-mcp (https://github.com/example/rdocs-mcp)",
+            "dociium-tests (contact@example.com)",
             Duration::from_secs(30),
         )
         .expect("Failed to create crates.io client");
@@ -75,6 +75,7 @@ impl Fetcher {
 
         let crates_query = CratesQuery::builder()
             .search(query)
+            .sort(crates_io_api::Sort::Relevance)
             .page_size(u64::from(limit.min(100)));
 
         let response = self

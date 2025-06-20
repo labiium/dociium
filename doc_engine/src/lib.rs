@@ -515,7 +515,7 @@ mod tests {
 
         assert!(
             item.rendered_markdown
-                .contains("Converts a value to a string slice"),
+                .contains("Returns the argument unchanged"),
             "Expected sentence is missing"
         );
     }

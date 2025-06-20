@@ -398,6 +398,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "bytes",
+ "chrono",
  "crates_io_api",
  "flate2",
  "futures",
