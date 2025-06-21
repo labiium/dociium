@@ -18,6 +18,8 @@ crates_io_api = { workspace = true }
 rustdoc-types = { workspace = true }
 # rocksdb = { workspace = true } # Temporarily disabled due to build issues
 flate2 = { workspace = true }
+zstd = { workspace = true }
+chrono = { workspace = true }
 governor = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }

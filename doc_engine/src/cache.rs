@@ -11,6 +11,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tracing::{debug, info};
+use zstd::stream::{Decoder, Encoder};
 
 // Removed unused import
 
@@ -73,7 +74,7 @@ impl Cache {
         let serialized =
             bincode::serialize(docs).context("Failed to serialize crate documentation")?;
 
-        let compressed = serialized.clone();
+        let compressed = self._compress_data(&serialized)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -139,7 +140,7 @@ impl Cache {
             let mut entry: CacheEntry =
                 bincode::deserialize(&entry_bytes).context("Failed to deserialize cache entry")?;
 
-            let decompressed = entry.data.clone();
+            let decompressed = self._decompress_data(&entry.data)?;
             let docs: crate::CrateDocumentation = bincode::deserialize(&decompressed)
                 .context("Failed to deserialize cached documentation")?;
 
@@ -176,7 +177,7 @@ impl Cache {
 
     /// Store generic data in cache
     pub fn store_data(&self, category: &str, key: &str, data: &[u8]) -> Result<()> {
-        let compressed = data.to_vec();
+        let compressed = self._compress_data(data)?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -211,7 +212,7 @@ impl Cache {
             let mut entry: CacheEntry =
                 bincode::deserialize(&entry_bytes).context("Failed to deserialize cache entry")?;
 
-            let decompressed = entry.data.clone();
+            let decompressed = self._decompress_data(&entry.data)?;
 
             // Update last accessed time
             entry.last_accessed = SystemTime::now()
@@ -338,13 +339,20 @@ impl Cache {
         Ok(removed_count)
     }
 
-    // Compression temporarily disabled
+    /// Compress data using zstd
     fn _compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        Ok(data.to_vec())
+        let mut encoder = Encoder::new(Vec::new(), 3)?;
+        std::io::copy(&mut std::io::Cursor::new(data), &mut encoder)?;
+        let compressed = encoder.finish()?;
+        Ok(compressed)
     }
 
+    /// Decompress zstd-compressed data
     fn _decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        Ok(data.to_vec())
+        let mut decoder = Decoder::new(data)?;
+        let mut out = Vec::new();
+        std::io::copy(&mut decoder, &mut out)?;
+        Ok(out)
     }
 
     /// Evict LRU entries from memory cache
@@ -444,7 +452,6 @@ mod tests {
         let decompressed = cache._decompress_data(&compressed).unwrap();
 
         assert_eq!(test_data, decompressed);
-        // Compression temporarily disabled
-        assert_eq!(compressed.len(), test_data.len());
+        assert!(compressed.len() < test_data.len());
     }
 }
