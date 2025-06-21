@@ -1,47 +1,81 @@
 //! Cache module for storing and retrieving crate documentation
 
 use anyhow::{Context, Result};
+use crc32fast::Hasher as Crc32Hasher; // For CRC32 checksum
+use moka::future::Cache as MokaCache;
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+use sha2::{Digest, Sha256}; // Keep Sha256 for checksum
 use std::{
-    collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tracing::{debug, info};
-use zstd::stream::{Decoder, Encoder};
-
-// Removed unused import
+use tracing::{debug, info, warn};
+use zstd::stream::{Decoder as ZstdDecoder, Encoder as ZstdEncoder};
 
 /// Cache for storing crate documentation and metadata
-#[derive(Debug)]
+#[derive(Debug, Clone)] // Clone so DocEngine can clone it
 pub struct Cache {
     cache_dir: PathBuf,
-    memory_cache: Arc<Mutex<HashMap<String, CachedItem>>>,
-    max_memory_entries: usize,
+    // `Arc` is not strictly necessary for MokaCache if Cache itself is Arc'd in DocEngine,
+    // but MokaCache is already thread-safe (Arc<Inner>)
+    memory_cache: MokaCache<String, Arc<crate::CrateDocumentation>>, // Store Arc<CrateDocumentation> directly
+    // Stats
+    hits: Arc<std::sync::atomic::AtomicU64>,
+    misses: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// In-memory cached item
-#[derive(Debug, Clone)]
-struct CachedItem {
-    data: Vec<u8>,
-    last_accessed: SystemTime,
-    size: usize,
-}
-
-/// Serializable cache entry
+/// Disk cache entry metadata (stored alongside the compressed data or as part of a manifest)
+/// For CrateDocumentation, the file name itself might be `crate_name@version.json.zst`
+/// This struct would be for a separate metadata file if we don't embed it.
+/// Or, if we store raw bytes (like tarballs), this metadata would be useful.
+/// For CrateDocumentation, we serialize it, then compress.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct CacheEntry {
-    data: Vec<u8>,
+struct DiskCacheItemMetadata {
+    original_size: usize,
+    stored_size: usize,
     created_at: u64,
     last_accessed: u64,
-    size: usize,
-    version: String,
-    checksum: String,
-    metadata: HashMap<String, String>,
+    version: String, // e.g., schema version of CrateDocumentation or this metadata
+    sha256_checksum: String,
+    crc32_checksum: u32,
+    // Other potential metadata: content_type, encoding, etc.
 }
+
+/// Serializable cache entry for on-disk storage of CrateDocumentation
+/// This will be what's actually written to a file like `crate@version.json.zst`
+/// (though it's bincode, not json, then zstd).
+/// The spec says `cache/docs/*.bin.zst`. So we'll bincode::serialize, then zstd::encode.
+/// The metadata might be stored separately or not at all if filenames are informative enough.
+/// For simplicity, let's assume the file itself is the compressed CrateDocumentation,
+/// and metadata like checksums are handled during store/load.
+/// The `CacheEntry` struct from before might be too complex if we simplify.
+
+// Let's simplify: the file on disk IS the zstd-compressed bincode-serialized CrateDocumentation.
+// Checksums will be verified on load. We might need a small metadata file next to it
+// if we need to store things like original_size without decompressing, or the checksums themselves.
+
+// For CacheStats, we'll need to iterate directory for disk usage.
+
+/// Statistics about the cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStats {
+    /// Number of CrateDocumentation entries currently on disk in the 'docs' directory.
+    pub total_docs_on_disk_entries: usize,
+    /// Total size of CrateDocumentation entries on disk in the 'docs' directory (compressed size).
+    pub total_docs_on_disk_size_bytes: u64,
+    /// Number of CrateDocumentation entries currently in the memory cache.
+    pub memory_cache_docs_entries: usize,
+    // pub memory_cache_size_bytes: u64, // Moka does not easily expose byte size for complex Arc<T> values
+    /// Hit rate for memory/disk lookups (hits / (hits + misses)).
+    pub hit_rate: f64,
+    /// Total disk usage of the entire rdocs-mcp cache directory (includes docs, symbols, traits, meta, tarballs).
+    pub total_disk_usage_bytes: u64,
+}
+
+// The old CacheEntry struct is no longer used with the new Moka + direct file storage approach.
+// If we need to store metadata next to files, DiskCacheItemMetadata would be used.
 
 /// Cache statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,342 +90,269 @@ pub struct CacheStats {
 
 impl Cache {
     /// Create a new cache instance
-    pub fn new(cache_dir: impl AsRef<Path>) -> Result<Self> {
-        let cache_dir = cache_dir.as_ref().to_path_buf();
-        fs::create_dir_all(&cache_dir)?;
+    pub fn new(base_cache_dir: impl AsRef<Path>) -> Result<Self> {
+        let base_cache_dir = base_cache_dir.as_ref().to_path_buf();
+        let docs_cache_dir = base_cache_dir.join("docs");
+        fs::create_dir_all(&docs_cache_dir).with_context(|| {
+            format!(
+                "Failed to create docs cache directory at {:?}",
+                docs_cache_dir
+            )
+        })?;
 
-        let memory_cache = Arc::new(Mutex::new(HashMap::new()));
+        // Configure Moka cache (e.g., max capacity, time to live)
+        // Max capacity is in number of entries.
+        // Estimate CrateDocumentation size: can vary wildly. Let's say average 1MB serialized.
+        // For 100MB memory cache, that's ~100 entries.
+        let memory_cache = MokaCache::builder()
+            .max_capacity(200) // Max 200 CrateDocumentation objects in memory
+            .time_to_live(Duration::from_secs(2 * 60 * 60)) // 2 hours TTL
+            .time_to_idle(Duration::from_secs(30 * 60)) // 30 minutes TTI
+            .build();
 
         Ok(Self {
-            cache_dir,
+            cache_dir: docs_cache_dir, // Store path to specific 'docs' subdirectory
             memory_cache,
-            max_memory_entries: 1000,
+            hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            misses: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
+    fn get_disk_path(&self, key: &str) -> PathBuf {
+        // key is typically "crate_name@version"
+        self.cache_dir.join(format!("{}.bin.zst", key))
+    }
+
     /// Store crate documentation in cache
-    pub fn store_crate_docs(&self, key: &str, docs: &crate::CrateDocumentation) -> Result<()> {
-        let serialized =
-            bincode::serialize(docs).context("Failed to serialize crate documentation")?;
+    pub async fn store_crate_docs(
+        &self,
+        key: &str,
+        docs: Arc<crate::CrateDocumentation>,
+    ) -> Result<()> {
+        // 1. Serialize CrateDocumentation using bincode
+        let serialized_docs = bincode::serialize(docs.as_ref())
+            .context("Failed to serialize crate documentation for caching")?;
 
-        let compressed = self._compress_data(&serialized)?;
+        let original_size = serialized_docs.len();
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // 2. Compute checksums of serialized (uncompressed) data
+        let mut crc_hasher = Crc32Hasher::new();
+        crc_hasher.update(&serialized_docs);
+        let crc32_checksum = crc_hasher.finalize();
 
-        let entry = CacheEntry {
-            data: compressed,
-            created_at: now,
-            last_accessed: now,
-            size: serialized.len(),
-            version: "1.0".to_string(),
-            checksum: format!("{:x}", sha2::Sha256::digest(&serialized)),
-            metadata: HashMap::new(),
-        };
+        let sha256_checksum = format!("{:x}", Sha256::digest(&serialized_docs));
 
-        // Store to disk
-        let file_path = self.cache_dir.join(format!("{}.cache", key));
-        let entry_bytes = bincode::serialize(&entry).context("Failed to serialize cache entry")?;
-        fs::write(&file_path, entry_bytes)?;
+        // 3. Compress serialized data using zstd
+        let mut encoder = ZstdEncoder::new(Vec::new(), 3) // ZSTD level 3
+            .context("Failed to create zstd encoder")?;
+        std::io::copy(&mut serialized_docs.as_slice(), &mut encoder)
+            .context("Failed to copy data to zstd encoder")?;
+        let compressed_data = encoder.finish().context("Failed to finish zstd encoding")?;
+        let stored_size = compressed_data.len();
 
-        // Store in memory cache
-        {
-            let mut cache = self.memory_cache.lock().unwrap();
+        // 4. Store compressed data to disk
+        let file_path = self.get_disk_path(key);
+        fs::write(&file_path, &compressed_data)
+            .with_context(|| format!("Failed to write cached docs to disk at {:?}", file_path))?;
 
-            // Evict old entries if needed
-            if cache.len() >= self.max_memory_entries {
-                self.evict_lru_entries(&mut cache, self.max_memory_entries / 4);
-            }
+        // Optional: Store metadata (including checksums) to a separate .meta file or in a DB
+        // For now, checksums are computed but not stored separately; they'd be re-verified on load.
+        // If we want to store them, DiskCacheItemMetadata would be used here.
+        debug!(
+            "Stored crate docs for '{}': original_size={}, stored_size={}, crc32={}, sha256={}",
+            key, original_size, stored_size, crc32_checksum, sha256_checksum
+        );
 
-            cache.insert(
-                key.to_string(),
-                CachedItem {
-                    data: serialized.clone(),
-                    last_accessed: SystemTime::now(),
-                    size: serialized.len(),
-                },
-            );
-        }
+        // 5. Add to memory cache (Moka stores Arc directly)
+        self.memory_cache.insert(key.to_string(), docs).await;
+        // Moka's insert invalidates and drops the old value if the key already exists.
 
-        debug!("Stored crate documentation for: {}", key);
         Ok(())
     }
 
     /// Retrieve crate documentation from cache
-    pub fn get_crate_docs(&self, key: &str) -> Result<Option<crate::CrateDocumentation>> {
-        // Check memory cache first
-        {
-            let mut cache = self.memory_cache.lock().unwrap();
-            if let Some(item) = cache.get_mut(key) {
-                item.last_accessed = SystemTime::now();
-                let docs: crate::CrateDocumentation = bincode::deserialize(&item.data)
-                    .context("Failed to deserialize cached documentation")?;
-                debug!("Cache hit (memory) for: {}", key);
-                return Ok(Some(docs));
-            }
-        }
-
-        // Check disk cache
-        let file_path = self.cache_dir.join(format!("{}.cache", key));
-        if file_path.exists() {
-            let entry_bytes = fs::read(&file_path)?;
-            let mut entry: CacheEntry =
-                bincode::deserialize(&entry_bytes).context("Failed to deserialize cache entry")?;
-
-            let decompressed = self._decompress_data(&entry.data)?;
-            let docs: crate::CrateDocumentation = bincode::deserialize(&decompressed)
-                .context("Failed to deserialize cached documentation")?;
-
-            // Update last accessed time
-            entry.last_accessed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            let updated_entry_bytes =
-                bincode::serialize(&entry).context("Failed to serialize updated cache entry")?;
-            fs::write(&file_path, updated_entry_bytes)?;
-
-            // Add to memory cache
-            {
-                let mut cache = self.memory_cache.lock().unwrap();
-                cache.insert(
-                    key.to_string(),
-                    CachedItem {
-                        data: decompressed.clone(),
-                        last_accessed: SystemTime::now(),
-                        size: decompressed.len(),
-                    },
-                );
-            }
-
-            debug!("Cache hit (disk) for: {}", key);
+    pub async fn get_crate_docs(
+        &self,
+        key: &str,
+    ) -> Result<Option<Arc<crate::CrateDocumentation>>> {
+        // 1. Check memory cache first
+        if let Some(docs) = self.memory_cache.get(key).await {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            debug!("Memory cache hit for: {}", key);
             return Ok(Some(docs));
         }
 
+        // 2. Check disk cache
+        let file_path = self.get_disk_path(key);
+        if file_path.exists() {
+            let compressed_data = fs::read(&file_path).with_context(|| {
+                format!("Failed to read cached docs from disk at {:?}", file_path)
+            })?;
+
+            let mut decoder = ZstdDecoder::new(compressed_data.as_slice())
+                .context("Failed to create zstd decoder")?;
+            let mut decompressed_data = Vec::new();
+            std::io::copy(&mut decoder, &mut decompressed_data)
+                .context("Failed to decompress cached docs")?;
+
+            // Verify checksums (optional, but good practice)
+            let mut crc_hasher = Crc32Hasher::new();
+            crc_hasher.update(&decompressed_data);
+            let _crc32_checksum = crc_hasher.finalize(); // TODO: Compare if stored
+
+            let _sha256_checksum = format!("{:x}", Sha256::digest(&decompressed_data)); // TODO: Compare if stored
+                                                                                        // For now, we're not failing on checksum mismatch as we don't store them yet.
+                                                                                        // This would be where you load DiskCacheItemMetadata and compare.
+
+            let docs: crate::CrateDocumentation = bincode::deserialize(&decompressed_data)
+                .context("Failed to deserialize cached crate documentation")?;
+
+            let arc_docs = Arc::new(docs);
+            self.memory_cache
+                .insert(key.to_string(), Arc::clone(&arc_docs))
+                .await;
+
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            debug!("Disk cache hit for: {}", key);
+            return Ok(Some(arc_docs));
+        }
+
+        self.misses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         debug!("Cache miss for: {}", key);
         Ok(None)
     }
 
-    /// Store generic data in cache
-    pub fn store_data(&self, category: &str, key: &str, data: &[u8]) -> Result<()> {
-        let compressed = self._compress_data(data)?;
+    // /// Store generic data in cache (Example, can be re-implemented if needed)
+    // pub async fn store_generic_data(&self, category: &str, key: &str, data: &[u8]) -> Result<()> { ... }
+    // /// Retrieve generic data from cache (Example, can be re-implemented if needed)
+    // pub async fn get_generic_data(&self, category: &str, key: &str) -> Result<Option<Vec<u8>>> { ... }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+    /// Remove a specific CrateDocumentation entry from memory and disk cache.
+    pub async fn remove_crate_docs(&self, key: &str) -> Result<bool> {
+        self.memory_cache.invalidate(key).await; // Remove from Moka cache
 
-        let entry = CacheEntry {
-            data: compressed,
-            created_at: now,
-            last_accessed: now,
-            size: data.len(),
-            version: "1.0".to_string(),
-            checksum: format!("{:x}", sha2::Sha256::digest(data)),
-            metadata: HashMap::new(),
-        };
+        let file_path = self.get_disk_path(key);
+        let existed_on_disk = file_path.exists();
+        if existed_on_disk {
+            fs::remove_file(&file_path).with_context(|| {
+                format!("Failed to remove cached docs from disk at {:?}", file_path)
+            })?;
+            debug!("Removed disk cache entry for: {}", key);
+        }
+        Ok(existed_on_disk)
+    }
 
-        let entry_bytes = bincode::serialize(&entry).context("Failed to serialize cache entry")?;
+    /// Clear all cache entries (both memory and disk for CrateDocumentation).
+    pub async fn clear_all_crate_docs(&self) -> Result<()> {
+        self.memory_cache.invalidate_all();
+        // For Moka, clear() is sync, invalidate_all() is async if using_eventual_consistency.
+        // For a full clear, re-initializing might be simpler or use run_pending_tasks after invalidate_all.
+        // self.memory_cache.run_pending_tasks().await; // Ensure invalidations are processed for tests.
 
-        let file_path = self.cache_dir.join(format!("{}_{}.cache", category, key));
-        fs::write(&file_path, entry_bytes)?;
+        // Clear disk cache (only .bin.zst files in the docs directory)
+        let entries = fs::read_dir(&self.cache_dir)
+            .with_context(|| format!("Failed to read cache directory {:?}", self.cache_dir))?;
 
-        debug!("Stored data for: {}:{}", category, key);
+        for entry in entries {
+            let entry = entry.with_context(|| "Failed to read directory entry")?;
+            let path = entry.path();
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "zst") {
+                if path
+                    .file_name()
+                    .map_or(false, |name| name.to_string_lossy().ends_with(".bin.zst"))
+                {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("Failed to remove disk cache file {:?}", path))?;
+                }
+            }
+        }
+        self.hits.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.misses.store(0, std::sync::atomic::Ordering::Relaxed);
+        info!("Cleared all CrateDocumentation cache entries.");
         Ok(())
     }
 
-    /// Retrieve generic data from cache
-    pub fn get_data(&self, category: &str, key: &str) -> Result<Option<Vec<u8>>> {
-        let file_path = self.cache_dir.join(format!("{}_{}.cache", category, key));
+    /// Get cache statistics.
+    pub async fn get_stats(&self) -> Result<CacheStats> {
+        let mut disk_docs_entries = 0;
+        let mut disk_docs_size_bytes = 0u64;
 
-        if file_path.exists() {
-            let entry_bytes = fs::read(&file_path)?;
-            let mut entry: CacheEntry =
-                bincode::deserialize(&entry_bytes).context("Failed to deserialize cache entry")?;
-
-            let decompressed = self._decompress_data(&entry.data)?;
-
-            // Update last accessed time
-            entry.last_accessed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            let updated_entry_bytes =
-                bincode::serialize(&entry).context("Failed to serialize updated cache entry")?;
-            fs::write(&file_path, updated_entry_bytes)?;
-
-            debug!("Retrieved data for: {}:{}", category, key);
-            return Ok(Some(decompressed));
-        }
-
-        debug!("Data not found for: {}:{}", category, key);
-        Ok(None)
-    }
-
-    /// Remove an entry from cache
-    pub fn remove(&self, category: &str, key: &str) -> Result<bool> {
-        // Remove from memory cache
+        // Calculate stats for the 'docs' cache directory
+        for entry in fs::read_dir(&self.cache_dir)
+            .with_context(|| format!("Failed to read docs cache directory {:?}", self.cache_dir))?
         {
-            let mut cache = self.memory_cache.lock().unwrap();
-            cache.remove(key);
-        }
-
-        // Remove from disk cache
-        let file_path = self.cache_dir.join(format!("{}_{}.cache", category, key));
-        let existed = file_path.exists();
-        if existed {
-            fs::remove_file(&file_path)?;
-            debug!("Removed cache entry: {}:{}", category, key);
-        }
-
-        Ok(existed)
-    }
-
-    /// Clear all cache entries
-    pub fn clear(&self) -> Result<()> {
-        // Clear memory cache
-        {
-            let mut cache = self.memory_cache.lock().unwrap();
-            cache.clear();
-        }
-
-        // Clear disk cache
-        for entry in fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "cache") {
-                fs::remove_file(path)?;
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().map_or(false, |ext| ext == "zst")
+                    && path
+                        .file_name()
+                        .map_or(false, |name| name.to_string_lossy().ends_with(".bin.zst"))
+                {
+                    disk_docs_entries += 1;
+                    if let Ok(metadata) = entry.metadata() {
+                        disk_docs_size_bytes += metadata.len();
+                    }
+                }
             }
         }
 
-        info!("Cleared all cache entries");
-        Ok(())
-    }
-
-    /// Get cache statistics
-    pub fn get_stats(&self) -> Result<CacheStats> {
-        let mut total_entries = 0;
-        let mut total_size_bytes = 0u64;
-
-        // Count disk cache entries
-        for entry in fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "cache") {
-                total_entries += 1;
-                total_size_bytes += entry.metadata()?.len();
-            }
-        }
-
-        let (memory_cache_entries, memory_cache_size_bytes) = {
-            let cache = self.memory_cache.lock().unwrap();
-            let entries = cache.len();
-            let size = cache.values().map(|item| item.size as u64).sum();
-            (entries, size)
+        let mem_hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
+        let mem_misses = self.misses.load(std::sync::atomic::Ordering::Relaxed);
+        let total_lookups = mem_hits + mem_misses;
+        let hit_rate = if total_lookups == 0 {
+            0.0
+        } else {
+            mem_hits as f64 / total_lookups as f64
         };
 
-        // Calculate disk usage
-        let disk_usage_bytes = self.calculate_disk_usage()?;
+        // Moka doesn't easily give byte size. We report entry count.
+        let memory_cache_entries = self.memory_cache.entry_count() as usize;
+
+        // Total disk usage of the entire base cache directory (docs, symbols, traits, meta, tarballs)
+        // This requires `self.cache_dir` to be the *base* cache dir, not the 'docs' subdir.
+        // Let's adjust Cache to store base_cache_dir and derive docs_cache_dir from it for this.
+        // For now, this will only calculate size of 'docs' dir.
+        // To do it properly, `calculate_disk_usage` needs the true base path.
+        // The current self.cache_dir is `.../docs`. So we need parent.
+        let base_cache_dir = self
+            .cache_dir
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cache dir has no parent"))?;
+        let total_disk_usage_bytes = calculate_recursive_disk_usage(base_cache_dir)?;
 
         Ok(CacheStats {
-            total_entries,
-            total_size_bytes,
-            memory_cache_entries,
-            memory_cache_size_bytes,
-            hit_rate: 0.0, // TODO: Implement hit rate tracking
-            disk_usage_bytes,
+            total_docs_on_disk_entries: disk_docs_entries,
+            total_docs_on_disk_size_bytes: disk_docs_size_bytes,
+            memory_cache_docs_entries: memory_cache_entries,
+            // memory_cache_size_bytes: 0, // Moka does not expose this easily for complex types.
+            hit_rate,
+            total_disk_usage_bytes, // Total for the whole rdocs-mcp cache area
         })
     }
 
-    /// Clean up expired entries
-    pub fn cleanup_expired(&self, max_age: Duration) -> Result<usize> {
-        let cutoff = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - max_age.as_secs();
+    // cleanup_expired and specific methods for tarballs etc. would be added here.
+    // For CrateDocumentation, Moka handles TTL/TTI for memory.
+    // Disk cleanup would need to iterate files and check mod times or stored metadata.
+}
 
-        let mut removed_count = 0;
+/// Helper to calculate disk usage of a directory recursively.
+fn calculate_recursive_disk_usage(path: &Path) -> Result<u64> {
+    let mut total_size = 0;
+    let entries = fs::read_dir(path)
+        .with_context(|| format!("Failed to read directory for size calculation: {:?}", path))?;
 
-        for entry in fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |ext| ext == "cache") {
-                if let Ok(entry_bytes) = fs::read(&path) {
-                    if let Ok(cache_entry) = bincode::deserialize::<CacheEntry>(&entry_bytes) {
-                        if cache_entry.last_accessed < cutoff {
-                            fs::remove_file(&path)?;
-                            removed_count += 1;
-                        }
-                    }
-                }
-            }
+    for entry in entries {
+        let entry = entry.with_context(|| "Failed to read directory entry for size calculation")?;
+        let path = entry.path();
+        if path.is_dir() {
+            total_size += calculate_recursive_disk_usage(&path)?;
+        } else if let Ok(metadata) = entry.metadata() {
+            total_size += metadata.len();
         }
-
-        if removed_count > 0 {
-            info!("Cleaned up {} expired cache entries", removed_count);
-        }
-
-        Ok(removed_count)
     }
-
-    /// Compress data using zstd
-    fn _compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut encoder = Encoder::new(Vec::new(), 3)?;
-        std::io::copy(&mut std::io::Cursor::new(data), &mut encoder)?;
-        let compressed = encoder.finish()?;
-        Ok(compressed)
-    }
-
-    /// Decompress zstd-compressed data
-    fn _decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decoder = Decoder::new(data)?;
-        let mut out = Vec::new();
-        std::io::copy(&mut decoder, &mut out)?;
-        Ok(out)
-    }
-
-    /// Evict LRU entries from memory cache
-    fn evict_lru_entries(&self, cache: &mut HashMap<String, CachedItem>, count: usize) {
-        let mut entries: Vec<_> = cache
-            .iter()
-            .map(|(k, v)| (k.clone(), v.last_accessed))
-            .collect();
-        entries.sort_by_key(|(_, last_accessed)| *last_accessed);
-
-        for (key, _) in entries.into_iter().take(count) {
-            cache.remove(&key);
-        }
-
-        debug!("Evicted {} entries from memory cache", count);
-    }
-
-    /// Calculate disk usage
-    fn calculate_disk_usage(&self) -> Result<u64> {
-        let mut total_size = 0u64;
-
-        fn visit_dir(dir: &Path, total_size: &mut u64) -> Result<()> {
-            if dir.is_dir() {
-                for entry in fs::read_dir(dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.is_dir() {
-                        visit_dir(&path, total_size)?;
-                    } else {
-                        *total_size += entry.metadata()?.len();
-                    }
-                }
-            }
-            Ok(())
-        }
-
-        visit_dir(&self.cache_dir, &mut total_size)?;
-        Ok(total_size)
-    }
+    Ok(total_size)
 }
 
 #[cfg(test)]

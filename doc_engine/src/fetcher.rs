@@ -1,6 +1,7 @@
 //! Fetcher module for downloading and managing Rust crate data
 
 use anyhow::{Context, Result};
+use chrono::prelude::*;
 use crates_io_api::{AsyncClient, CratesQuery};
 use flate2::read::GzDecoder;
 use governor::{Quota, RateLimiter};
@@ -8,12 +9,11 @@ use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use chrono::prelude::*;
+use std::fmt;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tar::Archive;
 use tempfile::TempDir;
-use std::fmt;
 use tracing::{debug, info, instrument, warn};
 
 use crate::types::*;
@@ -186,9 +186,14 @@ impl Fetcher {
         Ok(crate_info)
     }
 
-    /// Download and extract a crate to a temporary directory
+    /// Download and extract a crate to a temporary directory.
+    /// Returns the TempDir and the raw tarball bytes.
     #[instrument(skip(self), fields(name = %name, version = %version))]
-    pub async fn download_crate(&self, name: &str, version: &Version) -> Result<TempDir> {
+    pub async fn download_crate(
+        &self,
+        name: &str,
+        version: &Version,
+    ) -> Result<(TempDir, bytes::Bytes)> {
         info!("Downloading crate: {}@{}", name, version);
 
         // Wait for rate limit
@@ -241,7 +246,7 @@ impl Fetcher {
             "Successfully downloaded and extracted crate: {}@{}",
             name, version
         );
-        Ok(temp_dir)
+        Ok((temp_dir, bytes))
     }
 
     /// Get the latest stable version of a crate
@@ -320,7 +325,6 @@ impl Fetcher {
         // TODO: Compare with expected checksum from API
         Ok(true)
     }
-
 }
 
 /// Download statistics for a crate

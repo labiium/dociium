@@ -72,35 +72,41 @@ impl TraitImplIndex {
     }
 
     /// Build the index from rustdoc data
-    pub fn from_rustdoc(rustdoc_crate: &RustdocCrate) -> Result<Self> {
+    pub fn from_rustdoc(krate: &RustdocCrate) -> Result<Self> {
         let mut index = Self::new();
-        index.build_from_rustdoc(rustdoc_crate)?;
+        index.build_from_rustdoc(krate)?;
         Ok(index)
     }
 
     /// Build the index from rustdoc crate data
-    fn build_from_rustdoc(&mut self, rustdoc_crate: &RustdocCrate) -> Result<()> {
-        info!("Building trait implementation index");
+    fn build_from_rustdoc(&mut self, krate: &RustdocCrate) -> Result<()> {
+        info!(
+            "Building trait implementation index for crate: {}",
+            krate.root.0
+        );
 
         // First pass: collect all traits and types
-        for (id, item) in &rustdoc_crate.index {
+        for (id, item) in &krate.index {
             match &item.inner {
                 ItemEnum::Trait(trait_item) => {
                     let trait_data = TraitData {
                         id: id.clone(),
                         name: item.name.clone().unwrap_or_default(),
-                        path: self.build_item_path(id, &rustdoc_crate.index),
+                        path: self.build_item_path(id, krate),
                         generics: self.extract_generics(&trait_item.generics),
                         items: trait_item.items.clone(),
                     };
                     self.traits.insert(id.clone(), trait_data);
                 }
-                ItemEnum::Struct(_) | ItemEnum::Enum(_) | ItemEnum::Union(_) => {
+                ItemEnum::Struct(_)
+                | ItemEnum::Enum(_)
+                | ItemEnum::Union(_)
+                | ItemEnum::TypeAlias(_) => {
                     let type_data = TypeData {
                         id: id.clone(),
                         name: item.name.clone().unwrap_or_default(),
-                        path: self.build_item_path(id, &rustdoc_crate.index),
-                        kind: self.get_item_kind(&item.inner),
+                        path: self.build_item_path(id, krate),
+                        kind: self.get_item_kind_string(&item.inner),
                     };
                     self.types.insert(id.clone(), type_data);
                 }
@@ -109,14 +115,15 @@ impl TraitImplIndex {
         }
 
         // Second pass: process implementations
-        for (id, item) in &rustdoc_crate.index {
+        for (id, item) in &krate.index {
             if let ItemEnum::Impl(impl_item) = &item.inner {
-                self.process_implementation(id, impl_item, item, &rustdoc_crate.index)?;
+                // Pass krate to process_implementation for context if needed later for signature building
+                self.process_implementation(id, impl_item, item, krate)?;
             }
         }
 
         // Third pass: build lookup maps
-        self.build_lookup_maps()?;
+        self.build_lookup_maps(krate)?;
 
         info!(
             "Built trait implementation index with {} traits, {} types, {} implementations",
@@ -134,7 +141,7 @@ impl TraitImplIndex {
         impl_id: &Id,
         impl_item: &Impl,
         item: &Item,
-        _index: &HashMap<Id, Item>,
+        _krate: &RustdocCrate, // krate available if needed for context
     ) -> Result<()> {
         let impl_data = ImplData {
             id: impl_id.clone(),
@@ -159,7 +166,8 @@ impl TraitImplIndex {
     }
 
     /// Build lookup maps for efficient querying
-    fn build_lookup_maps(&mut self) -> Result<()> {
+    fn build_lookup_maps(&mut self, krate: &RustdocCrate) -> Result<()> {
+        // Added krate
         debug!("Building trait implementation lookup maps");
 
         for impl_data in self.implementations.values() {
@@ -167,27 +175,30 @@ impl TraitImplIndex {
             if let Some(trait_id) = &impl_data.trait_id {
                 if let Some(trait_data) = self.traits.get(trait_id) {
                     let trait_impl = TraitImpl {
-                        for_type: self.type_to_string(&impl_data.for_type),
+                        for_type: self.type_to_string(&impl_data.for_type, krate),
                         trait_path: trait_data.path.clone(),
                         generics: impl_data.generics.clone(),
                         where_clause: impl_data.where_clause.clone(),
                         source_span: impl_data.source_location.clone(),
-                        impl_id: format!("{:?}", impl_data.id),
-                        items: self.build_impl_items(&impl_data.items),
+                        impl_id: format!("{:?}", impl_data.id), // Consider a more stable ID
+                        items: self.build_impl_items(&impl_data.items, krate),
                         is_blanket: impl_data.is_blanket,
                         is_synthetic: impl_data.is_synthetic,
+                        // TODO: Add negative impls if identifiable
+                        // TODO: Add auto trait status if identifiable
                     };
 
                     self.trait_to_impls
                         .entry(trait_data.path.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(trait_impl);
                 }
             }
 
             // Map type -> trait implementations
-            let for_type_str = self.type_to_string(&impl_data.for_type);
+            let for_type_str = self.type_to_string(&impl_data.for_type, krate);
             if let Some(trait_id) = &impl_data.trait_id {
+                // This is for trait impls
                 if let Some(trait_data) = self.traits.get(trait_id) {
                     let type_impl = TypeImpl {
                         trait_path: trait_data.path.clone(),
@@ -195,16 +206,23 @@ impl TraitImplIndex {
                         where_clause: impl_data.where_clause.clone(),
                         source_span: impl_data.source_location.clone(),
                         impl_id: format!("{:?}", impl_data.id),
-                        items: self.build_impl_items(&impl_data.items),
+                        items: self.build_impl_items(&impl_data.items, krate),
                         is_blanket: impl_data.is_blanket,
                         is_synthetic: impl_data.is_synthetic,
+                        // TODO: Add negative impls
+                        // TODO: Add auto trait status
                     };
 
                     self.type_to_impls
-                        .entry(for_type_str)
-                        .or_insert_with(Vec::new)
+                        .entry(for_type_str.clone()) // Use clone if for_type_str is used again
+                        .or_default()
                         .push(type_impl);
                 }
+            } else { // This is for inherent impls (impl MyType { ... })
+                 // The current structure (TypeImpl, TraitImpl) is focused on trait implementations.
+                 // If inherent impl items also need to be listed under a type,
+                 // a different structure or an extension to TypeImpl might be needed.
+                 // For now, focusing on trait impls as per TraitImplIndex's primary role.
             }
         }
 
@@ -288,15 +306,26 @@ impl TraitImplIndex {
 
     // Helper methods
 
-    /// Build item path from ID
-    fn build_item_path(&self, id: &Id, index: &HashMap<Id, Item>) -> String {
-        // This is a simplified implementation
-        // In practice, you'd need to traverse the module hierarchy
-        if let Some(item) = index.get(id) {
-            item.name.clone().unwrap_or_else(|| format!("{:?}", id))
-        } else {
-            format!("{:?}", id)
+    /// Build item path from ID using the krate's paths map.
+    fn build_item_path(&self, id: &Id, krate: &RustdocCrate) -> String {
+        if let Some(path_info) = krate.paths.get(id) {
+            return path_info.path.join("::");
         }
+        // Fallback for items not in paths map (e.g. some impls)
+        // or if root is the item.
+        if Some(id) == krate.root.as_ref() {
+            return krate
+                .index
+                .get(&krate.root.as_ref().unwrap())
+                .and_then(|i| i.name.clone())
+                .unwrap_or_default();
+        }
+        // Fallback to item name if path not found by ID.
+        krate
+            .index
+            .get(id)
+            .and_then(|item| item.name.clone())
+            .unwrap_or_else(|| format!("id:{}", id.0))
     }
 
     /// Extract generics from rustdoc generics
@@ -331,96 +360,288 @@ impl TraitImplIndex {
         trait_path.id.clone()
     }
 
-    /// Convert type to string representation
-    fn type_to_string(&self, ty: &Type) -> String {
+    /// Convert type to string representation, using krate for path resolution.
+    fn type_to_string(&self, ty: &Type, krate: &RustdocCrate) -> String {
         match ty {
-            Type::ResolvedPath(path) => path.name.clone(),
+            Type::ResolvedPath(path) => {
+                // Try to resolve full path if ID is present
+                if let Some(path_info) = krate.paths.get(&path.id) {
+                    path_info.path.join("::")
+                } else {
+                    path.name.clone() // Fallback to name
+                }
+            }
             Type::DynTrait(dyn_trait) => {
-                format!(
-                    "dyn {}",
-                    dyn_trait
-                        .traits
-                        .first()
-                        .map(|t| t.trait_.name.clone())
-                        .unwrap_or_else(|| "Trait".to_string())
-                )
+                let trait_names: Vec<String> = dyn_trait
+                    .traits
+                    .iter()
+                    .map(|t| self.type_to_string(&Type::ResolvedPath(t.trait_.clone()), krate))
+                    .collect();
+                format!("dyn {}", trait_names.join(" + "))
             }
             Type::Generic(name) => name.clone(),
             Type::Primitive(name) => name.clone(),
-            Type::FunctionPointer(_) => "fn".to_string(),
+            Type::FunctionPointer(fp) => {
+                let inputs = fp
+                    .decl
+                    .inputs
+                    .iter()
+                    .map(|(_, t)| self.type_to_string(t, krate))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let output = fp
+                    .decl
+                    .output
+                    .as_ref()
+                    .map_or_else(|| "()".to_string(), |t| self.type_to_string(t, krate));
+                // Consider safety (unsafe) and abi
+                format!("fn({}) -> {}", inputs, output)
+            }
             Type::Tuple(types) => {
-                let type_strs: Vec<String> = types.iter().map(|t| self.type_to_string(t)).collect();
+                let type_strs: Vec<String> = types
+                    .iter()
+                    .map(|t| self.type_to_string(t, krate))
+                    .collect();
                 format!("({})", type_strs.join(", "))
             }
-            Type::Slice(inner) => format!("[{}]", self.type_to_string(inner)),
-            Type::Array { type_, len } => format!("[{}; {}]", self.type_to_string(type_), len),
-            Type::ImplTrait(bounds) => format!("impl {}", bounds.len()),
+            Type::Slice(inner) => format!("[{}]", self.type_to_string(inner, krate)),
+            Type::Array { type_, len } => {
+                format!("[{}; {}]", self.type_to_string(type_, krate), len)
+            }
+            Type::ImplTrait(bounds) => {
+                let bound_strs: Vec<String> = bounds
+                    .iter()
+                    .map(|b| self.generic_bound_to_string(b, krate))
+                    .collect();
+                format!("impl {}", bound_strs.join(" + "))
+            }
             Type::Infer => "_".to_string(),
             Type::RawPointer { mutable, type_ } => {
                 format!(
                     "*{} {}",
                     if *mutable { "mut" } else { "const" },
-                    self.type_to_string(type_)
+                    self.type_to_string(type_, krate)
                 )
             }
             Type::BorrowedRef {
-                lifetime: _,
+                lifetime,
                 mutable,
                 type_,
             } => {
                 format!(
-                    "&{}{}",
+                    "&{}{}{}",
+                    lifetime
+                        .as_ref()
+                        .map_or("".to_string(), |l| l.to_string() + " "),
                     if *mutable { "mut " } else { "" },
-                    self.type_to_string(type_)
+                    self.type_to_string(type_, krate)
                 )
             }
             Type::QualifiedPath {
                 name,
-                args: _,
+                args, // TODO: Handle GenericArgs properly
                 self_type,
                 trait_,
             } => {
-                format!(
-                    "<{} as {}>::{}",
-                    self.type_to_string(self_type),
-                    trait_.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
-                    name
-                )
+                let self_type_str = self.type_to_string(self_type, krate);
+                let trait_str = trait_.as_ref().map_or("Self".to_string(), |p| {
+                    self.type_to_string(&Type::ResolvedPath(p.clone()), krate)
+                });
+                // Args might need more detailed formatting
+                let args_str = if let Some(bindings) = args.as_ref().map(|a| &a.bindings) {
+                    if !bindings.is_empty() {
+                        format!(
+                            "<{}>",
+                            bindings
+                                .iter()
+                                .map(|b| self.generic_binding_to_string(b, krate))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                };
+
+                format!("<{} as {}>::{}{}", self_type_str, trait_str, name, args_str)
             }
-            Type::Pat { .. } => "pattern".to_string(),
+            Type::Pat { .. } => "pattern".to_string(), // Should not typically appear in resolved types
+        }
+    }
+
+    /// Helper for converting GenericBound to string
+    fn generic_bound_to_string(
+        &self,
+        bound: &rustdoc_types::GenericBound,
+        krate: &RustdocCrate,
+    ) -> String {
+        match bound {
+            rustdoc_types::GenericBound::TraitBound {
+                trait_,
+                generic_params,
+                modifier,
+            } => {
+                let mut s = String::new();
+                if !generic_params.is_empty() {
+                    // e.g. for<'a>
+                    s.push_str("for<");
+                    s.push_str(
+                        &generic_params
+                            .iter()
+                            .map(|gp| gp.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    s.push_str("> ");
+                }
+                s.push_str(match modifier {
+                    rustdoc_types::TraitBoundModifier::None => "",
+                    rustdoc_types::TraitBoundModifier::Maybe => "?",
+                    rustdoc_types::TraitBoundModifier::MaybeConst => "~const ", // nightly feature
+                });
+                s.push_str(&self.type_to_string(&Type::ResolvedPath(trait_.clone()), krate));
+                s
+            }
+            rustdoc_types::GenericBound::Lifetime(lt) => lt.clone(),
+        }
+    }
+
+    /// Helper for converting GenericBinding to string
+    fn generic_binding_to_string(
+        &self,
+        binding: &rustdoc_types::GenericBinding,
+        krate: &RustdocCrate,
+    ) -> String {
+        match binding {
+            rustdoc_types::GenericBinding::TypeBinding {
+                name,
+                args,
+                binding_type,
+            } => {
+                let mut s = name.clone();
+                // TODO: args if present (GenericArgs)
+                match binding_type {
+                    rustdoc_types::TypeBindingKind::Equality(term) => {
+                        s.push_str(" = ");
+                        s.push_str(&self.type_to_string(term, krate));
+                    }
+                    rustdoc_types::TypeBindingKind::Constraint(bounds) => {
+                        if !bounds.is_empty() {
+                            s.push_str(": ");
+                            s.push_str(
+                                &bounds
+                                    .iter()
+                                    .map(|b| self.generic_bound_to_string(b, krate))
+                                    .collect::<Vec<_>>()
+                                    .join(" + "),
+                            );
+                        }
+                    }
+                }
+                s
+            }
+            rustdoc_types::GenericBinding::Constraint { name, bounds } => {
+                let mut s = name.clone();
+                if !bounds.is_empty() {
+                    s.push_str(": ");
+                    s.push_str(
+                        &bounds
+                            .iter()
+                            .map(|b| self.generic_bound_to_string(b, krate))
+                            .collect::<Vec<_>>()
+                            .join(" + "),
+                    );
+                }
+                s
+            }
+            rustdoc_types::GenericBinding::Lifetime { name, lifetime } => {
+                format!("{}: {}", name, lifetime)
+            }
         }
     }
 
     /// Get item kind as string
-    fn get_item_kind(&self, item: &ItemEnum) -> String {
-        match item {
-            ItemEnum::Struct(_) => "struct".to_string(),
-            ItemEnum::Enum(_) => "enum".to_string(),
-            ItemEnum::Union(_) => "union".to_string(),
-            ItemEnum::Trait(_) => "trait".to_string(),
-            ItemEnum::Function(_) => "function".to_string(),
-            ItemEnum::TypeAlias(_) => "type_alias".to_string(),
-            ItemEnum::Constant { .. } => "constant".to_string(),
-            ItemEnum::Static(_) => "static".to_string(),
-            ItemEnum::Macro(_) => "macro".to_string(),
-            _ => "other".to_string(),
-        }
+    fn get_item_kind_string(&self, item_enum: &ItemEnum) -> String {
+        SymbolKind::from_item_enum(item_enum).as_str().to_string()
     }
 
-    /// Build implementation items
-    fn build_impl_items(&self, item_ids: &[Id]) -> Vec<ImplItem> {
-        // Simplified implementation - in practice, you'd resolve the actual items
+    /// Build detailed ImplItem from item IDs by looking them up in the crate.
+    fn build_impl_items(&self, item_ids: &[Id], krate: &RustdocCrate) -> Vec<ImplItem> {
         item_ids
             .iter()
-            .enumerate()
-            .map(|(i, _id)| ImplItem {
-                name: format!("item_{}", i),
-                kind: "unknown".to_string(),
-                signature: None,
-                doc: None,
-                source_location: None,
+            .filter_map(|id| krate.index.get(id))
+            .map(|item| {
+                let kind_str = self.get_item_kind_string(&item.inner);
+                // TODO: More sophisticated signature extraction.
+                let signature = match &item.inner {
+                    ItemEnum::Function(f) => {
+                        Some(self.format_fn_signature(item.name.as_deref().unwrap_or(""), f, krate))
+                    }
+                    ItemEnum::Constant(c) => Some(format!(
+                        "const {}: {}",
+                        item.name.as_deref().unwrap_or("_"),
+                        self.type_to_string(&c.type_, krate)
+                    )),
+                    ItemEnum::TypeAlias(ta) => Some(format!(
+                        "type {} = {};",
+                        item.name.as_deref().unwrap_or("_"),
+                        self.type_to_string(&ta.type_, krate)
+                    )),
+                    // Add other kinds as needed
+                    _ => item.name.clone(),
+                };
+
+                ImplItem {
+                    name: item
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("id:{}", item.id.0)),
+                    kind: kind_str,
+                    signature,
+                    doc: item.docs.clone(),
+                    source_location: item.span.as_ref().map(|s| SourceLocation {
+                        file: s.filename.to_string_lossy().into_owned(),
+                        line: s.begin.0 as u32,
+                        column: s.begin.1 as u32,
+                        end_line: Some(s.end.0 as u32),
+                        end_column: Some(s.end.1 as u32),
+                    }),
+                }
             })
             .collect()
+    }
+
+    fn format_fn_signature(
+        &self,
+        name: &str,
+        func: &rustdoc_types::Function,
+        krate: &RustdocCrate,
+    ) -> String {
+        let mut sig = String::new();
+        // TODO: Handle async, const, unsafe from func.header
+        sig.push_str("fn ");
+        sig.push_str(name);
+        // TODO: Handle func.generics properly
+        sig.push('(');
+        let inputs = func
+            .decl
+            .inputs
+            .iter()
+            .map(|(param_name, param_type)| {
+                format!("{}: {}", param_name, self.type_to_string(param_type, krate))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        sig.push_str(&inputs);
+        sig.push(')');
+        if let Some(output_type) = &func.decl.output {
+            sig.push_str(" -> ");
+            sig.push_str(&self.type_to_string(output_type, krate));
+        }
+        // TODO: Where clause from func.generics.where_predicates
+        sig
     }
 }
 

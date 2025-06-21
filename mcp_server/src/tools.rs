@@ -226,6 +226,23 @@ pub fn validate_item_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Utility to validate semantic version strings
+pub fn validate_version_str(version_str: Option<&str>) -> Result<(), String> {
+    if let Some(v_str) = version_str {
+        if v_str.trim().is_empty() {
+            return Err("Version string cannot be empty if provided.".to_string());
+        }
+        // Allow "latest" as a special keyword, or try to parse as semver.
+        if v_str.to_lowercase() == "latest" {
+            return Ok(());
+        }
+        semver::Version::parse(v_str)
+            .map_err(|e| format!("Invalid version string '{}': {}", v_str, e))?;
+    }
+    // If None, it's also valid (means "use latest applicable")
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

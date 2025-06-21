@@ -80,6 +80,32 @@ impl RustdocBuilder {
     pub async fn build_json(&self) -> Result<RustdocCrate> {
         info!("Building rustdoc JSON for crate at: {:?}", self.crate_dir);
 
+        // Verify toolchain
+        let toolchain_check = Command::new("cargo")
+            .arg(format!("+{}", self.config.toolchain))
+            .arg("--version")
+            .output()
+            .await;
+
+        match toolchain_check {
+            Ok(output) if output.status.success() => {
+                info!("Toolchain {} found.", self.config.toolchain);
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow::anyhow!(
+                    "Toolchain +{} is not available or 'cargo +{} --version' failed. Error: {}. Please ensure the '{}' toolchain with 'rustc-dev' component is installed (e.g., rustup toolchain install {} && rustup component add rustc-dev --toolchain {}).",
+                    self.config.toolchain, self.config.toolchain, stderr, self.config.toolchain, self.config.toolchain, self.config.toolchain
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Failed to execute 'cargo +{} --version' to check toolchain. Error: {}. Please ensure cargo is in PATH and the '{}' toolchain is installed.",
+                    self.config.toolchain, e, self.config.toolchain
+                ));
+            }
+        }
+
         // Find the actual crate directory (may be nested in extracted tarball)
         let actual_crate_dir = self.find_crate_root().await?;
         debug!("Found crate root at: {:?}", actual_crate_dir);
@@ -195,7 +221,11 @@ impl RustdocBuilder {
         // Rustdoc-specific flags
         cmd.arg("--");
         cmd.arg("-Zunstable-options");
-        cmd.arg("--output-format").arg("json");
+        // cmd.arg("--output-format").arg("json"); // Replaced by the line below
+        cmd.arg("--output-format=json"); // Ensure this is the format used by modern rustdoc
+        cmd.arg("-Zunstable-options"); // May need to be repeated or is implied by --output-format json
+        cmd.arg("--json=diagnostic-rendered-ansi"); // As per spec for error reporting
+
         cmd.arg("-o").arg(output_dir);
 
         // Additional rustdoc flags
@@ -294,7 +324,6 @@ impl RustdocBuilder {
                 .errors
                 .push("Rustdoc JSON contains no items".to_string());
         }
-
 
         // Check for common issues
         let mut public_items = 0;

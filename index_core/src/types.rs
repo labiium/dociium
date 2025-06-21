@@ -5,9 +5,68 @@ use std::collections::HashMap;
 
 /// Search result for symbol search
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SymbolKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Const,
+    Macro,
+    TypeAlias,
+    Module,
+    Unknown, // Added for completeness
+}
+
+impl SymbolKind {
+    pub fn from_item_enum(item_enum: &rustdoc_types::ItemEnum) -> Self {
+        match item_enum {
+            rustdoc_types::ItemEnum::Function(_) => SymbolKind::Function,
+            rustdoc_types::ItemEnum::Struct(_) => SymbolKind::Struct,
+            rustdoc_types::ItemEnum::Enum(_) => SymbolKind::Enum,
+            rustdoc_types::ItemEnum::Trait(_) => SymbolKind::Trait,
+            rustdoc_types::ItemEnum::Constant { .. } => SymbolKind::Const,
+            rustdoc_types::ItemEnum::Macro(_) => SymbolKind::Macro,
+            rustdoc_types::ItemEnum::TypeAlias(_) => SymbolKind::TypeAlias,
+            rustdoc_types::ItemEnum::Module(_) => SymbolKind::Module,
+            _ => SymbolKind::Unknown,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SymbolKind::Function => "Function",
+            SymbolKind::Struct => "Struct",
+            SymbolKind::Enum => "Enum",
+            SymbolKind::Trait => "Trait",
+            SymbolKind::Const => "Const",
+            SymbolKind::Macro => "Macro",
+            SymbolKind::TypeAlias => "TypeAlias",
+            SymbolKind::Module => "Module",
+            SymbolKind::Unknown => "Unknown",
+        }
+    }
+}
+
+impl From<&str> for SymbolKind {
+    fn from(s: &str) -> Self {
+        match s {
+            "Function" => SymbolKind::Function,
+            "Struct" => SymbolKind::Struct,
+            "Enum" => SymbolKind::Enum,
+            "Trait" => SymbolKind::Trait,
+            "Const" => SymbolKind::Const,
+            "Macro" => SymbolKind::Macro,
+            "TypeAlias" => SymbolKind::TypeAlias,
+            "Module" => SymbolKind::Module,
+            _ => SymbolKind::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolSearchResult {
     pub path: String,
-    pub kind: String,
+    pub kind: SymbolKind,
     pub score: f32,
     pub doc_summary: Option<String>,
     pub source_location: Option<SourceLocation>,
@@ -157,29 +216,90 @@ pub enum IndexError {
 /// Result type for index operations
 pub type IndexResult<T> = Result<T, IndexError>;
 
-/// Search options
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchOptions {
-    pub kinds: Option<Vec<String>>,
-    pub limit: usize,
-    pub offset: usize,
-    pub include_private: bool,
-    pub include_docs: bool,
-    pub fuzzy_matching: bool,
-    pub min_score: f32,
-    pub highlight_matches: bool,
+/// Specifies the type of search query.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum QueryType {
+    Exact,
+    Prefix,
+    Fuzzy, // Standard Levenshtein distance based fuzzy search
+    Term,  // General term matching, can include wildcards if supported by parser
 }
 
-impl Default for SearchOptions {
+/// Configuration for how search results should be scored and boosted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoringConfig {
+    /// Boost factor for exact matches on the item name.
+    pub name_exact_match_boost: f32,
+    /// Boost factor for prefix matches on the item name.
+    pub name_prefix_match_boost: f32,
+    /// Boost factor for matches in the item's path.
+    pub path_match_boost: f32,
+    /// Boost factor for matches in documentation.
+    pub doc_match_boost: f32,
+    /// General boost for item kind (e.g., boost Functions more than Modules).
+    pub kind_boost: HashMap<SymbolKind, f32>,
+    /// Custom per-field boosts. Key is field name, value is boost factor.
+    pub field_boosts: HashMap<String, f32>,
+}
+
+impl Default for ScoringConfig {
     fn default() -> Self {
         Self {
-            kinds: None,
+            name_exact_match_boost: 3.0,
+            name_prefix_match_boost: 1.5,
+            path_match_boost: 1.2,
+            doc_match_boost: 1.0,
+            kind_boost: HashMap::new(), // No specific kind boosts by default
+            field_boosts: HashMap::new(),
+        }
+    }
+}
+
+/// Search options to control how a symbol search is performed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolSearchOptions {
+    /// The main search query string.
+    pub query: String,
+    /// Type of query to perform (Exact, Prefix, Fuzzy, Term).
+    pub query_type: QueryType,
+    /// For Fuzzy queries, the Levenshtein distance. Defaults to 1 or 2.
+    pub fuzzy_distance: Option<u8>,
+    /// Maximum number of results to return.
+    pub limit: usize,
+    /// Offset for pagination.
+    pub offset: usize,
+    /// Filter results by specific kinds of symbols.
+    pub kinds: Option<Vec<SymbolKind>>,
+    /// Filter results by module path (exact match or prefix).
+    pub module_path_filter: Option<String>,
+    /// Filter results by visibility (e.g., "public").
+    pub visibility_filter: Option<Vec<String>>, // e.g. ["public", "documented"]
+    /// Whether to include items marked as deprecated.
+    pub include_deprecated: bool,
+    /// Whether to search only items that have documentation.
+    pub must_have_docs: bool,
+    /// Configuration for scoring and boosting results.
+    pub scoring_config: ScoringConfig,
+    /// If true, Tantivy will try to provide highlighted snippets of matched terms.
+    /// This requires the fields to be STORED.
+    pub highlight_matches: bool,
+    // TODO: Add options for crate_ids if searching across multiple crates in one index (not current model)
+}
+
+impl Default for SymbolSearchOptions {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            query_type: QueryType::Term, // Default to general term matching
+            fuzzy_distance: Some(1),
             limit: 20,
             offset: 0,
-            include_private: false,
-            include_docs: true,
-            fuzzy_matching: true,
-            min_score: 0.1,
+            kinds: None,
+            module_path_filter: None,
+            visibility_filter: None,
+            include_deprecated: false, // Usually, users don't want deprecated items by default
+            must_have_docs: false,
+            scoring_config: ScoringConfig::default(),
             highlight_matches: false,
         }
     }

@@ -47,17 +47,18 @@ rustdoc-types = "0.26"
 tantivy = "0.21"
 
 # Database
-rocksdb = "0.22"
+rocksdb = { version = "0.22", default-features = false }
 
 # Compression
 flate2 = "1.0"
-zstd = "0.13"
+# zstd = "0.11.0" # Temporarily removing zstd due to persistent build issues
 
 # Date and time handling
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
 # Hashing
 sha2 = "0.10"
+blake3 = "1.5"
 
 # File system utilities
 tempfile = "3.8"
@@ -73,12 +74,18 @@ governor = "0.6"
 insta = "1.34"
 assert_cmd = "2.0"
 
+# Syntax Highlighting
+syntect = "5.0"
+
 # Additional dependencies
 bincode = "1.3"
 
 # Async utilities
 dashmap = "5.5"
-lru = "0.12"
+lru = "0.12" # Will be replaced by moka in doc_engine
+moka = { version = "0.12", features = ["future"] }
+once_cell = "1.18" # Added for lazy statics
+
 
 # Security
 seccompiler = "0.4"
@@ -87,8 +94,8 @@ seccompiler = "0.4"
 semaphore = "0.1"
 
 # Observability
-opentelemetry = "0.20"
-opentelemetry-otlp = "0.13"
+opentelemetry = { version = "0.20", features = ["rt-tokio"] } # Ensure rt-tokio is a default feature here if used by main
+opentelemetry-otlp = { version = "0.13", features = ["grpc-tonic"] } # Add grpc-tonic
 prometheus = "0.13"
 
 # HTTP client features
@@ -99,3 +106,6 @@ tar = "0.4"
 
 # Hex encoding for checksums
 hex = "0.4"
+
+# Semantic Versioning
+semver = "1.0"

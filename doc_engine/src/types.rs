@@ -323,3 +323,24 @@ pub struct ModuleInfo {
     pub visibility: String,
     pub attributes: Vec<String>,
 }
+
+/// Build mode for preloading crates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BuildMode {
+    /// Only download the crate tarball.
+    DownloadOnly,
+    /// Download and build the full rustdoc documentation and indexes.
+    Full,
+}
+
+/// Overall statistics for the DocEngine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineStats {
+    /// Statistics from the documentation cache.
+    pub cache_stats: crate::cache::CacheStats,
+    /// Number of crates for which rustdoc JSON has been built (approximated by items in memory/disk cache).
+    pub indexed_crates_count: usize,
+    // Potentially add stats from IndexCore if it exposes them (e.g., total symbols, traits)
+    // pub symbol_index_stats: Option<index_core::IndexStats>,
+    // pub trait_index_stats: Option<index_core::TraitImplStats>,
+}

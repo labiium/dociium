@@ -13,8 +13,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 rustdoc-types = { workspace = true }
-# tantivy = { workspace = true } # Temporarily disabled due to build issues
+tantivy = { workspace = true, optional = true }
 futures = { workspace = true }
+rocksdb = { workspace = true, optional = true, default-features = false } # No specific features for now, relying on what minimal build it has
+zstd = { workspace = true, optional = true } # This is for our app-level zstd usage, distinct from RocksDB's internal
+# tantivy-tokenizers = "0.7.0" # Removed as it's not found on crates.io
+once_cell = "1.18"
+
 
 # Additional dependencies
 rayon = "1.8"
@@ -26,4 +31,11 @@ fnv = "1.0"
 insta = { workspace = true }
 tokio = { workspace = true }
 tempfile = { workspace = true }
-proptest = "1.4"
+proptest = "1.4" # Already present, ensure version is compatible if issues arise.
+
+[features]
+default = ["fulltext-search", "rocksdb-backend"]
+fulltext-search = ["dep:tantivy"]
+rocksdb-backend = ["dep:rocksdb"]
+# compress-cache = ["dep:zstd"] # If index_core itself needs to compress things. For now, doc_engine handles its cache.
+minimal = []

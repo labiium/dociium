@@ -16,9 +16,9 @@ reqwest = { workspace = true }
 tracing = { workspace = true }
 crates_io_api = { workspace = true }
 rustdoc-types = { workspace = true }
-# rocksdb = { workspace = true } # Temporarily disabled due to build issues
-flate2 = { workspace = true }
-zstd = { workspace = true }
+rocksdb = { workspace = true, optional = true }
+flate2 = { workspace = true } # For gzip if needed
+# zstd = { workspace = true, optional = true } # Temporarily removed
 chrono = { workspace = true }
 governor = { workspace = true }
 hex = { workspace = true }
@@ -26,9 +26,12 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 walkdir = { workspace = true }
 futures = { workspace = true }
+syntect = { workspace = true }
+moka = { workspace = true }
+blake3 = { workspace = true }
 
 # Local crates
-index_core = { path = "../index_core" }
+index_core = { path = "../index_core", default-features = false }
 
 # Additional dependencies
 tar = "0.4"
@@ -42,3 +45,10 @@ bincode = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 tokio-test = "0.4"
+
+[features]
+default = ["fulltext-search", "rocksdb-backend"] # Removed compress-cache from default
+fulltext-search = ["index_core/fulltext-search"]
+rocksdb-backend = ["dep:rocksdb", "index_core/rocksdb-backend"]
+# compress-cache = ["dep:zstd"] # Temporarily removed
+minimal = ["index_core/minimal"]

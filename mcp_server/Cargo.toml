@@ -23,10 +23,13 @@ rmcp = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
+opentelemetry = { workspace = true, optional = true } # Added for the feature definition
+opentelemetry-otlp = { workspace = true, optional = true } # Added for the feature definition
+
 
 # Local crates
-doc_engine = { path = "../doc_engine" }
-index_core = { path = "../index_core" }
+doc_engine = { path = "../doc_engine", default-features = false }
+index_core = { path = "../index_core", default-features = false }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -34,7 +37,9 @@ tokio-test = "0.4"
 assert_cmd = { workspace = true }
 
 [features]
-default = ["stdio"]
+default = ["stdio", "doc_engine/default", "index_core/default"]
 stdio = []
 websocket = []
 dev = ["tokio/tracing"]
+minimal = ["stdio", "doc_engine/minimal", "index_core/minimal"]
+opentelemetry-export = ["dep:opentelemetry", "opentelemetry/rt-tokio", "dep:opentelemetry-otlp", "tokio/rt"] # Add necessary features for OTLP
