@@ -8,6 +8,7 @@ use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use chrono::prelude::*;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tar::Archive;

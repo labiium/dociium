@@ -51,6 +51,10 @@ rocksdb = "0.22"
 
 # Compression
 flate2 = "1.0"
+zstd = "0.13"
+
+# Date and time handling
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 
 # Hashing
 sha2 = "0.10"

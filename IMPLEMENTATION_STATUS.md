@@ -81,10 +81,10 @@ All 7 core tools are implemented with proper MCP interfaces:
 - **Current**: Returns placeholder results for demonstration
 - **Production Ready**: Architecture is in place for full Tantivy integration
 
-### 🔧 Compression (Disabled)
-- **Status**: File-based cache without compression due to zstd build issues
-- **Current**: Direct binary serialization
-- **Production Ready**: Framework exists for compression re-enablement
+### 🔧 Compression
+- **Status**: Cache entries compressed using zstd
+- **Current**: Compression enabled for crate documentation and generic data
+- **Production Ready**: Uses level 3 compression with streaming encoder
 
 ### 🔧 Database Backend (Simplified)
 - **Status**: File-based storage instead of RocksDB due to build dependencies
@@ -102,7 +102,7 @@ All 7 core tools are implemented with proper MCP interfaces:
 
 ### 🔄 Environment-Dependent Features
 - **Full-Text Search**: Requires Tantivy compilation fix
-- **Compression**: Requires zstd/flate2 dependency resolution
+- **Compression**: Enabled using zstd
 - **Advanced Caching**: Requires RocksDB build environment
 
 ### 🎯 Performance Characteristics
@@ -115,7 +115,7 @@ All 7 core tools are implemented with proper MCP interfaces:
 
 1. **Environment Setup**: Resolve system dependencies for Tantivy and RocksDB
 2. **Search Integration**: Enable full Tantivy-based search implementation
-3. **Compression**: Re-enable cache compression for storage efficiency
+3. **Compression**: Already enabled with zstd
 4. **Performance Testing**: Load testing with multiple concurrent clients
 5. **Monitoring**: Add metrics collection and health endpoints
 
@@ -124,12 +124,12 @@ All 7 core tools are implemented with proper MCP interfaces:
 ### Basic Startup
 ```bash
 cd rdocs_mcp
-cargo run --bin rdocs-mcp-server
+cargo run --bin dociium
 ```
 
 ### With Custom Cache Directory
 ```bash
-RDOCS_CACHE_DIR=/path/to/cache cargo run --bin rdocs-mcp-server
+RDOCS_CACHE_DIR=/path/to/cache cargo run --bin dociium
 ```
 
 ### Testing
