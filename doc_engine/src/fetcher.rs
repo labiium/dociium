@@ -5,6 +5,8 @@ use crates_io_api::{AsyncClient, CratesQuery};
 use flate2::read::GzDecoder;
 use governor::{Quota, RateLimiter};
 use reqwest::Client;
+use reqwest::StatusCode;
+use rustdoc_types::Crate as RustdocCrate;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,8 +16,6 @@ use std::time::Duration;
 use tar::Archive;
 use tempfile::TempDir;
 use tracing::{debug, info, instrument, warn};
-use reqwest::StatusCode;
-use rustdoc_types::{Crate as RustdocCrate, ItemEnum};
 
 use crate::types::*;
 
@@ -272,14 +272,12 @@ impl Fetcher {
                     .await
                     .with_context(|| format!("Failed to read response bytes from {}", url))?;
 
-                serde_json::from_slice(&bytes)
-                    .map(Some)
-                    .with_context(|| {
-                        format!(
-                            "Failed to deserialize rustdoc.json from docs.rs for {}@{}",
-                            crate_name, version
-                        )
-                    })
+                serde_json::from_slice(&bytes).map(Some).with_context(|| {
+                    format!(
+                        "Failed to deserialize rustdoc.json from docs.rs for {}@{}",
+                        crate_name, version
+                    )
+                })
             }
             StatusCode::NOT_FOUND => {
                 info!(
@@ -383,12 +381,10 @@ impl Fetcher {
         let url = format!("https://docs.rs/{}/{}/{}", crate_name, version, crate_name);
         info!("Attempting to fetch HTML from: {}", url);
 
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("Failed to send request to docs.rs for HTML page: {}", url))?;
+        let response =
+            self.http_client.get(&url).send().await.with_context(|| {
+                format!("Failed to send request to docs.rs for HTML page: {}", url)
+            })?;
 
         match response.status() {
             StatusCode::OK => {
@@ -432,7 +428,8 @@ impl Default for Fetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // ItemEnum is already imported at the top level of the file now
+    // Import ItemEnum
+    use rustdoc_types::ItemEnum;
 
     #[test]
     fn test_fetcher_creation() {
@@ -522,13 +519,20 @@ mod tests {
         match result {
             Some(rustdoc_crate) => {
                 // This case might not be hit if docs.rs doesn't serve rustdoc.json at these URLs
-                info!("Successfully fetched rustdoc.json for {}@{}", crate_name, crate_version);
+                info!(
+                    "Successfully fetched rustdoc.json for {}@{}",
+                    crate_name, crate_version
+                );
                 assert_eq!(rustdoc_crate.crate_version, Some(crate_version.to_string()));
                 // Check for a known item, e.g., the `Serialize` trait
                 let found_item = rustdoc_crate.index.values().any(|item| {
-                    item.name.as_deref() == Some("Serialize") && matches!(item.inner, ItemEnum::Trait { .. })
+                    item.name.as_deref() == Some("Serialize")
+                        && matches!(item.inner, ItemEnum::Trait { .. })
                 });
-                assert!(found_item, "Did not find expected item 'Serialize' of kind Trait in rustdoc.json");
+                assert!(
+                    found_item,
+                    "Did not find expected item 'Serialize' of kind Trait in rustdoc.json"
+                );
             }
             None => {
                 // This is the expected case if docs.rs returns 404 for the rustdoc.json URL
@@ -556,7 +560,10 @@ mod tests {
             .fetch_rustdoc_json_from_docs_rs("nonexistent-crate-docium-xyz", "1.0.0")
             .await
             .unwrap();
-        assert!(result.is_none(), "Expected rustdoc.json to be not found for non-existent crate");
+        assert!(
+            result.is_none(),
+            "Expected rustdoc.json to be not found for non-existent crate"
+        );
     }
 
     #[tokio::test]
@@ -597,7 +604,7 @@ mod tests {
             html_content.contains("Buffer"),
             "HTML content missing 'Buffer' link or text"
         );
-         assert!(
+        assert!(
             html_content.contains("A correctly sized stack allocation"),
             "HTML content missing 'Buffer' summary text"
         );
@@ -612,8 +619,15 @@ mod tests {
             .fetch_crate_html_from_docs_rs(crate_name, version)
             .await;
 
-        assert!(result.is_ok(), "Request unexpectedly failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Request unexpectedly failed: {:?}",
+            result.err()
+        );
         let html_option = result.unwrap();
-        assert!(html_option.is_none(), "Expected None for non-existent crate HTML, got Some(...)");
+        assert!(
+            html_option.is_none(),
+            "Expected None for non-existent crate HTML, got Some(...)"
+        );
     }
 }
