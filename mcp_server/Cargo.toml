@@ -24,6 +24,7 @@ serde_json = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 
+
 # Local crates
 doc_engine = { path = "../doc_engine" }
 index_core = { path = "../index_core" }

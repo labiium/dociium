@@ -23,7 +23,6 @@ pub struct RustDocsMcpServer {
 impl RustDocsMcpServer {
     pub async fn new(cache_dir: &str) -> Result<Self> {
         let engine = Arc::new(DocEngine::new(cache_dir).await?);
-
         Ok(Self { engine })
     }
 }

@@ -13,6 +13,7 @@ tokio = { version = "1.45.1", features = [
     "process",
 ] }
 
+
 # Error handling
 anyhow = "1.0.98"
 thiserror = "1.0"
@@ -54,7 +55,11 @@ flate2 = "1.0"
 zstd = "0.13"
 
 # Date and time handling
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "serde",
+    "std",
+] }
 
 # Hashing
 sha2 = "0.10"
