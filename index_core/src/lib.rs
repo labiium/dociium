@@ -4,7 +4,7 @@
 //! including full-text search and trait-implementation mapping.
 
 use anyhow::Result;
-use rustdoc_types::Crate as RustdocCrate;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub mod search;
@@ -62,9 +62,9 @@ impl SymbolIndex {
         Ok(Self { _placeholder: () })
     }
 
-    /// Create a symbol index from rustdoc data
-    pub async fn from_rustdoc(
-        _rustdoc_crate: &RustdocCrate,
+    /// Create a symbol index from search index data
+    pub async fn from_search_index(
+        _search_index_data: &traits::SearchIndexData,
         index_core: &IndexCore,
     ) -> Result<Self> {
         let symbol_index = Self::new(index_core.clone())?;
@@ -84,19 +84,38 @@ impl SymbolIndex {
         // Simple mock result for demonstration
         if !query.is_empty() && limit > 0 {
             results.push(SymbolSearchResult {
-                path: format!("mock::{}", query),
+                path: format!("mock::{query}"),
                 kind: "function".to_string(),
                 score: 1.0,
-                doc_summary: Some(format!("Mock documentation for {}", query)),
+                doc_summary: Some(format!("Mock documentation for {query}")),
                 source_location: None,
                 visibility: "public".to_string(),
-                signature: Some(format!("fn {}() -> ()", query)),
+                signature: Some(format!("fn {query}() -> ()")),
                 module_path: "mock".to_string(),
             });
         }
 
         Ok(results)
     }
+}
+
+/// Individual item in the search index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexItem {
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub description: String,
+    pub parent_index: Option<usize>,
+}
+
+/// Search index data from docs.rs (lib version)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexData {
+    pub crate_name: String,
+    pub version: String,
+    pub items: Vec<SearchIndexItem>,
+    pub paths: Vec<String>,
 }
 
 #[cfg(test)]
@@ -125,6 +144,28 @@ mod tests {
         let index_core = IndexCore::new(temp_dir.path()).unwrap();
 
         let symbol_index = SymbolIndex::new(index_core);
+        assert!(symbol_index.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_search_index_creation() {
+        let temp_dir = tempdir().unwrap();
+        let index_core = IndexCore::new(temp_dir.path()).unwrap();
+
+        let search_data = traits::SearchIndexData {
+            crate_name: "test".to_string(),
+            version: "1.0.0".to_string(),
+            items: vec![traits::SearchIndexItem {
+                name: "test_function".to_string(),
+                kind: "function".to_string(),
+                path: "test::test_function".to_string(),
+                description: "A test function".to_string(),
+                parent_index: None,
+            }],
+            paths: vec!["test".to_string()],
+        };
+
+        let symbol_index = SymbolIndex::from_search_index(&search_data, &index_core).await;
         assert!(symbol_index.is_ok());
     }
 

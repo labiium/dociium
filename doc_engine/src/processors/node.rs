@@ -6,7 +6,7 @@ use std::path::Path;
 use tokio::fs;
 use tree_sitter::Parser;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NodeProcessor;
 
 #[derive(Clone, Copy)]
@@ -82,7 +82,7 @@ fn extract_item_by_name(source_code: &str, item_name: &str, lang: JsTsLanguage) 
 
     find_node(tree.root_node(), item_name, source_code.as_bytes())
         .map(|node| node.utf8_text(source_code.as_bytes()).unwrap().to_string())
-        .context(format!("Item '{}' not found in source code.", item_name))
+        .context(format!("Item '{item_name}' not found in source code."))
 }
 
 fn extract_jsdoc_comment(source_code: &str, item_name: &str, lang: JsTsLanguage) -> Option<String> {

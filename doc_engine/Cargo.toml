@@ -5,6 +5,7 @@ edition = "2021"
 description = "Documentation engine for fetching and processing Rust crate documentation"
 license = "MIT OR Apache-2.0"
 
+
 [features]
 default = []
 network-tests = []
@@ -21,7 +22,7 @@ reqwest = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 crates_io_api = { workspace = true }
-rustdoc-types = { workspace = true }
+scraper = { workspace = true }
 # rocksdb = { workspace = true } # Temporarily disabled due to build issues
 flate2 = { workspace = true }
 zstd = { workspace = true }
@@ -43,6 +44,7 @@ index_core = { path = "../index_core" }
 
 # Additional dependencies
 tar = "0.4"
+# Note: tar dependency will be removed as part of the transition
 regex = "1.10"
 semver = "1.0"
 url = "2.5"

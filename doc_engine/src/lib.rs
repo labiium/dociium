@@ -7,8 +7,6 @@
 use anyhow::{Context, Result};
 use index_core::{IndexCore, SymbolIndex, TraitImplIndex};
 use lru::LruCache;
-use rustdoc_types::{Crate as RustdocCrate, Id};
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
     num::NonZeroUsize,
@@ -24,7 +22,7 @@ pub mod cache;
 pub mod fetcher;
 pub mod finder;
 pub mod processors;
-pub mod rustdoc;
+pub mod scraper;
 pub mod types;
 
 pub use types::*;
@@ -63,8 +61,8 @@ impl DocEngine {
         let cache = Arc::new(cache::Cache::new(cache_dir)?);
         let index = Arc::new(IndexCore::new(cache_dir.join("index"))?);
         let memory_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())));
-        let python_processor = Arc::new(processors::python::PythonProcessor::default());
-        let node_processor = Arc::new(processors::node::NodeProcessor::default());
+        let python_processor = Arc::new(processors::python::PythonProcessor);
+        let node_processor = Arc::new(processors::node::NodeProcessor);
 
         Ok(Self {
             fetcher,
@@ -93,8 +91,29 @@ impl DocEngine {
         path: &str,
         version: Option<&str>,
     ) -> Result<ItemDoc> {
-        let docs = self.ensure_crate_docs(crate_name, version).await?;
-        docs.get_item_doc(path)
+        // Check item cache first
+        let version_str = if let Some(v) = version {
+            v.to_string()
+        } else {
+            let crate_info = self.fetcher.crate_info(crate_name).await?;
+            crate_info.latest_version
+        };
+
+        if let Some(cached_item) = self.cache.get_item_doc(crate_name, &version_str, path)? {
+            return Ok(cached_item);
+        }
+
+        // Fetch from docs.rs using scraper
+        let scraper = scraper::DocsRsScraper::new();
+        let item_doc = scraper
+            .fetch_item_doc(crate_name, &version_str, path)
+            .await?;
+
+        // Cache the result
+        self.cache
+            .store_item_doc(crate_name, &version_str, path, &item_doc)?;
+
+        Ok(item_doc)
     }
 
     /// List all implementations of a trait
@@ -215,16 +234,17 @@ impl DocEngine {
         // Get crate information
         let crate_info = self.fetcher.crate_info(crate_name).await?;
         let target_version = if let Some(v) = version {
-            Version::parse(v).context("Invalid version format")?
+            v.to_string()
         } else {
-            Version::parse(&crate_info.latest_version).context("Invalid latest version")?
+            crate_info.latest_version
         };
 
-        let cache_key_versioned = format!("{}@{}", crate_name, target_version);
+        let _cache_key_versioned = format!("{crate_name}@{target_version}");
 
-        // Check if we have cached documentation
-        if let Some(cached_docs) = self.cache.get_crate_docs(&cache_key_versioned)? {
-            let docs = Arc::new(cached_docs);
+        // Check if we have cached search index data
+        if let Some(search_data) = self.cache.get_crate_index(crate_name, &target_version)? {
+            let docs = CrateDocumentation::new_from_search_index(search_data, &self.index).await?;
+            let docs = Arc::new(docs);
 
             // Update memory cache
             {
@@ -235,17 +255,19 @@ impl DocEngine {
             return Ok(docs);
         }
 
-        // Need to build documentation
+        // Need to fetch search index from docs.rs
         info!(
-            "Building documentation for {}@{}",
+            "Fetching search index for {}@{}",
             crate_name, target_version
         );
 
-        let rustdoc_crate = self.build_rustdoc_json(crate_name, &target_version).await?;
-        let docs = CrateDocumentation::new(rustdoc_crate, &self.index).await?;
+        let search_data = self.fetch_search_index(crate_name, &target_version).await?;
+        let docs =
+            CrateDocumentation::new_from_search_index(search_data.clone(), &self.index).await?;
 
-        // Cache the documentation
-        self.cache.store_crate_docs(&cache_key_versioned, &docs)?;
+        // Cache the search index data
+        self.cache
+            .store_crate_index(crate_name, &target_version, &search_data)?;
 
         let docs = Arc::new(docs);
 
@@ -258,25 +280,39 @@ impl DocEngine {
         Ok(docs)
     }
 
-    /// Build rustdoc JSON for a crate
-    async fn build_rustdoc_json(
-        &self,
-        crate_name: &str,
-        version: &Version,
-    ) -> Result<RustdocCrate> {
-        // Download and extract crate
-        let temp_dir = self.fetcher.download_crate(crate_name, version).await?;
+    /// Clear all cache entries
+    pub async fn clear_all_cache(&self) -> Result<CacheOperationResult> {
+        self.cache.clear_all()
+    }
 
-        // Build rustdoc JSON
-        let rustdoc_builder = rustdoc::RustdocBuilder::new(temp_dir.path());
-        rustdoc_builder.build_json().await
+    /// Clear cache entries for a specific crate
+    pub async fn clear_crate_cache(&self, crate_name: &str) -> Result<CacheOperationResult> {
+        self.cache.clear_crate(crate_name)
+    }
+
+    /// Get cache statistics
+    pub async fn get_cache_stats(&self) -> Result<CacheStatistics> {
+        self.cache.get_enhanced_stats()
+    }
+
+    /// Cleanup expired cache entries
+    pub async fn cleanup_expired_cache(&self) -> Result<CacheOperationResult> {
+        self.cache.cleanup_expired_entries()
+    }
+
+    /// Fetch search index from docs.rs
+    async fn fetch_search_index(&self, crate_name: &str, version: &str) -> Result<SearchIndexData> {
+        let scraper = scraper::DocsRsScraper::new();
+        scraper.fetch_search_index(crate_name, version).await
     }
 }
 
 /// Documentation for a specific crate
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CrateDocumentation {
-    rustdoc_crate: RustdocCrate,
+    crate_name: String,
+    version: String,
+    search_index_data: SearchIndexData,
     #[serde(skip)]
     trait_impl_index: TraitImplIndex,
     #[serde(skip)]
@@ -284,51 +320,50 @@ pub struct CrateDocumentation {
 }
 
 impl CrateDocumentation {
-    /// Create new crate documentation
-    pub async fn new(rustdoc_crate: RustdocCrate, index_core: &IndexCore) -> Result<Self> {
-        // Build indexes
-        let trait_impl_index = TraitImplIndex::from_rustdoc(&rustdoc_crate)?;
-        let symbol_index = Some(SymbolIndex::from_rustdoc(&rustdoc_crate, index_core).await?);
+    /// Create new crate documentation from search index data
+    pub async fn new_from_search_index(
+        search_index_data: SearchIndexData,
+        index_core: &IndexCore,
+    ) -> Result<Self> {
+        // Convert to index_core types
+        let index_core_search_data = index_core::traits::SearchIndexData {
+            crate_name: search_index_data.crate_name.clone(),
+            version: search_index_data.version.clone(),
+            items: search_index_data
+                .items
+                .iter()
+                .map(|item| index_core::traits::SearchIndexItem {
+                    name: item.name.clone(),
+                    kind: item.kind.clone(),
+                    path: item.path.clone(),
+                    description: item.description.clone(),
+                    parent_index: item.parent_index,
+                })
+                .collect(),
+            paths: search_index_data.paths.clone(),
+        };
+
+        // Build indexes from search data
+        let trait_impl_index = TraitImplIndex::from_search_index(&index_core_search_data)?;
+        let symbol_index =
+            Some(SymbolIndex::from_search_index(&index_core_search_data, index_core).await?);
 
         Ok(Self {
-            rustdoc_crate,
+            crate_name: search_index_data.crate_name.clone(),
+            version: search_index_data.version.clone(),
+            search_index_data,
             trait_impl_index,
             symbol_index,
         })
     }
 
-    /// Get documentation for a specific item
-    pub fn get_item_doc(&self, path: &str) -> Result<ItemDoc> {
-        // Find the item by path
-        let item_id = self.find_item_by_path(path)?;
-        let item = self
-            .rustdoc_crate
-            .index
-            .get(&item_id)
-            .ok_or_else(|| anyhow::anyhow!("Item not found in index"))?;
-
-        // Convert to ItemDoc
-        Ok(ItemDoc {
-            path: path.to_string(),
-            kind: format!("{:?}", item.inner),
-            rendered_markdown: item
-                .docs
-                .as_ref()
-                .map(|d| d.clone())
-                .unwrap_or_else(|| "No documentation available".to_string()),
-            source_location: item.span.as_ref().map(|span| SourceLocation {
-                file: span.filename.to_string_lossy().to_string(),
-                line: span.begin.0 as u32,
-                column: span.begin.1 as u32,
-                end_line: Some(span.end.0 as u32),
-                end_column: Some(span.end.1 as u32),
-            }),
-            visibility: format!("{:?}", item.visibility),
-            attributes: Vec::new(), // TODO: Extract from rustdoc data
-            signature: None,        // TODO: Extract from rustdoc data
-            examples: Vec::new(),   // TODO: Extract from rustdoc data
-            see_also: Vec::new(),   // TODO: Extract from rustdoc data
-        })
+    /// Get documentation for a specific item (now uses on-demand scraping)
+    pub async fn get_item_doc(&self, path: &str) -> Result<ItemDoc> {
+        // Use scraper to fetch item documentation on-demand
+        let scraper = scraper::DocsRsScraper::new();
+        scraper
+            .fetch_item_doc(&self.crate_name, &self.version, path)
+            .await
     }
 
     /// List all implementations of a trait
@@ -396,33 +431,23 @@ impl CrateDocumentation {
         item_path: &str,
         context_lines: u32,
     ) -> Result<SourceSnippet> {
-        let item_id = self.find_item_by_path(item_path)?;
-        let item = self
-            .rustdoc_crate
-            .index
-            .get(&item_id)
-            .ok_or_else(|| anyhow::anyhow!("Item not found in index"))?;
-
-        if let Some(span) = &item.span {
-            // This is a simplified implementation - in practice, you'd need to
-            // access the original source files to extract the actual code
+        // Find the item in the search index
+        if let Some(item) = self.find_item_by_path(item_path)? {
+            // For now, we return a placeholder since source code access
+            // requires additional implementation beyond docs.rs scraping
             Ok(SourceSnippet {
                 code: format!(
-                    "// Source code for {}\n// Located at {}:{}:{}",
-                    item_path,
-                    span.filename.display(),
-                    span.begin.0,
-                    span.begin.1
+                    "// Source code for {item_path}\n// (Source code viewing not yet implemented for docs.rs scraping)"
                 ),
-                file: span.filename.to_string_lossy().to_string(),
-                line_start: (span.begin.0 as u32).saturating_sub(context_lines),
-                line_end: (span.end.0 as u32) + context_lines,
+                file: format!("{}.rs", item.name),
+                line_start: 1,
+                line_end: context_lines,
                 context_lines,
-                highlighted_line: Some(span.begin.0 as u32),
+                highlighted_line: Some(1),
                 language: "rust".to_string(),
             })
         } else {
-            Err(anyhow::anyhow!("No source location available for item"))
+            Err(anyhow::anyhow!("Item not found: {}", item_path))
         }
     }
 
@@ -454,19 +479,14 @@ impl CrateDocumentation {
         }
     }
 
-    /// Find an item by its path
-    fn find_item_by_path(&self, path: &str) -> Result<Id> {
-        // This is a simplified implementation - in practice, you'd need to
-        // traverse the module structure to resolve the path
-        for (id, item) in &self.rustdoc_crate.index {
-            if let Some(name) = &item.name {
-                if name == path || path.ends_with(&format!("::{}", name)) {
-                    return Ok(id.clone());
-                }
+    /// Find an item by its path in search index data
+    fn find_item_by_path(&self, path: &str) -> Result<Option<SearchIndexItem>> {
+        for item in &self.search_index_data.items {
+            if item.path == path || item.path.ends_with(&format!("::{}", item.name)) {
+                return Ok(Some(item.clone()));
             }
         }
-
-        Err(anyhow::anyhow!("Item not found: {}", path))
+        Ok(None)
     }
 }
 
@@ -493,5 +513,31 @@ mod tests {
             assert!(!results.is_empty());
             assert!(results.iter().any(|r| r.name == "serde"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_crate_documentation_from_search_index() {
+        let temp_dir = tempdir().unwrap();
+        let index_core = IndexCore::new(temp_dir.path()).unwrap();
+
+        let search_data = SearchIndexData {
+            crate_name: "test_crate".to_string(),
+            version: "1.0.0".to_string(),
+            items: vec![SearchIndexItem {
+                name: "TestStruct".to_string(),
+                kind: "struct".to_string(),
+                path: "test_crate::TestStruct".to_string(),
+                description: "A test struct".to_string(),
+                parent_index: None,
+            }],
+            paths: vec!["test_crate".to_string()],
+        };
+
+        let docs = CrateDocumentation::new_from_search_index(search_data, &index_core).await;
+        assert!(docs.is_ok());
+
+        let docs = docs.unwrap();
+        assert_eq!(docs.crate_name, "test_crate");
+        assert_eq!(docs.version, "1.0.0");
     }
 }

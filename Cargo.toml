@@ -41,8 +41,8 @@ schemars = "0.8"
 # Crates.io API
 crates_io_api = "0.8"
 
-# Rustdoc types
-rustdoc-types = "0.54"
+# HTML parsing for docs.rs scraping
+scraper = "0.19.0"
 
 # Search index
 tantivy = "0.21"

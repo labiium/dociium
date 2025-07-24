@@ -2,6 +2,8 @@
 
 A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to documentation and source code for multiple languages, including **Rust**, **Python**, and **Node.js (JavaScript/TypeScript)**. Built in Rust for maximum performance and reliability.
 
+**🔄 NEW: Now uses docs.rs scraping for enhanced security and faster documentation access!**
+
 ## 🚀 Features
 
 ### Core Functionality
@@ -25,6 +27,9 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 | `source_snippet` | Get source code with context | `crate_name`, `item_path`, `context_lines?`, `version?` |
 | `search_symbols` | (Rust) Search symbols within a crate | `crate_name`, `query`, `kinds?`, `limit?`, `version?` |
 | `get_implementation` | (Python/Node) Get implementation from a local environment | `language`, `package_name`, `item_path`, `context_path?` |
+| `get_cache_stats` | Get cache statistics and metrics | - |
+| `clear_cache` | Clear cache entries (all or specific crate) | `crate_name?` |
+| `cleanup_cache` | Remove expired cache entries | - |
 
 ### Usage Examples
 
@@ -92,22 +97,23 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
  │
  └─ DocEngine (doc_engine crate)
     ├─ Package Finder: Locates packages in local environments (pip, npm)
-    ├─ Crates.io Fetcher: Downloads Rust crates
+    ├─ Docs.rs Scraper: Fetches pre-built documentation from docs.rs
     ├─ Language Processors
-    │  ├─ Rust (uses rustdoc)
+    │  ├─ Rust (scrapes docs.rs)
     │  ├─ Python (uses tree-sitter)
     │  └─ Node.js (uses tree-sitter)
-    ├─ Cache: Persistent storage
+    ├─ Smart Cache: Item-level caching with TTL
     └─ IndexCore (index_core crate)
-       ├─ SymbolIndex: Full-text search
+       ├─ SymbolIndex: Full-text search from search-index.js
        └─ TraitImplIndex: Trait relationships
 ```
 
 ## 🛠️ Installation
 
 ### Prerequisites
-- **Rust 1.70+** with nightly toolchain
+- **Rust 1.70+** (nightly toolchain no longer required!)
 - **Git**
+- **Internet connection** for docs.rs access
 
 ### Building from Source
 
@@ -197,9 +203,11 @@ The server will listen on `127.0.0.1:8800` for WebSocket connections.
 ## 🔧 Configuration
 
 ### Cache Settings
-- **Memory Cache**: LRU cache with 100 entries
-- **Disk Cache**: File-based persistent storage
+- **Memory Cache**: LRU cache with 1000 entries
+- **Item-level Cache**: Individual documentation items cached separately
+- **Crate Index Cache**: Search indexes cached per crate
 - **TTL**: Configurable expiration (default: 7 days)
+- **Compression**: Optional zstd compression for disk storage
 
 ### Performance Tuning
 - **Rate Limiting**: 60 requests/minute per client
@@ -209,15 +217,16 @@ The server will listen on `127.0.0.1:8800` for WebSocket connections.
 ## 🚀 Performance
 
 ### Benchmarks
-- **Cold Start**: ~2-3 seconds for popular crates
-- **Warm Cache**: <100ms for cached queries
-- **Memory Usage**: ~50MB base + ~10MB per cached crate
-- **Build Time**: ~30-60 seconds per crate (one-time)
+- **Cold Start**: ~500ms for popular crates (docs.rs fetching)
+- **Warm Cache**: <50ms for cached queries
+- **Memory Usage**: ~30MB base + ~5MB per cached crate
+- **No Build Time**: Documentation pre-built on docs.rs
 
 ### Optimizations
-- **Incremental Builds**: Only rebuild when crate version changes
-- **Compressed Storage**: Efficient cache compression
-- **Smart Indexing**: Selective item indexing based on visibility
+- **On-demand Fetching**: Only fetch documentation when requested
+- **Compressed Storage**: Efficient cache compression with zstd
+- **Smart Indexing**: Uses docs.rs search-index.js for symbol search
+- **Item-level Caching**: Cache individual items to minimize network requests
 
 ## 🧪 Testing
 
@@ -244,9 +253,9 @@ rdocs_mcp/
 ├── doc_engine/           # Documentation engine
 │   ├── src/
 │   │   ├── lib.rs        # Main engine
-│   │   ├── fetcher.rs    # Crate fetching
-│   │   ├── cache.rs      # Caching layer
-│   │   ├── rustdoc.rs    # Rustdoc JSON builder
+│   │   ├── fetcher.rs    # Crate metadata fetching
+│   │   ├── cache.rs      # Multi-level caching
+│   │   ├── scraper.rs    # Docs.rs HTML scraper
 │   │   └── types.rs      # Type definitions
 │   └── Cargo.toml
 ├── index_core/           # Search and indexing
@@ -262,44 +271,89 @@ rdocs_mcp/
 
 ## 🔒 Security
 
+- **No Code Execution**: Eliminates RCE vulnerabilities by using pre-built docs
 - **Rate Limiting**: Prevents abuse with configurable limits
 - **Input Validation**: Comprehensive validation of all inputs
-- **Sandboxed Builds**: Isolated rustdoc generation
+- **Network Security**: Only fetches from trusted docs.rs domain
 - **Cache Isolation**: Per-crate cache isolation
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
-**"Nightly toolchain not found"**
-```bash
-rustup toolchain install nightly
-```
+**"Documentation not found"**
+- Ensure the crate has documentation published on docs.rs
+- Try a different version or use "latest"
 
-**"Build timeout"**
-- Increase `RUSTDOC_TIMEOUT` environment variable
-- Check internet connectivity for crate downloads
+**"Network timeout"**
+- Check internet connectivity
+- docs.rs may be temporarily unavailable
 
 **"Cache permission errors"**
 - Ensure write permissions to cache directory
 - Set `RDOCS_CACHE_DIR` to writable location
 
-**"Out of memory during indexing"**
-- Reduce index heap size in configuration
-- Clear cache: `rm -rf ~/.cache/rdocs-mcp`
+**"HTML parsing errors"**
+- Clear cache and retry: `rm -rf ~/.cache/rdocs-mcp`
+- docs.rs HTML structure may have changed
+
+### Cache Management
+
+Cache management is integrated into the MCP server tools:
+
+```json
+// View cache statistics
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_cache_stats",
+    "arguments": {}
+  }
+}
+
+// Clear all cache
+{
+  "method": "tools/call",
+  "params": {
+    "name": "clear_cache",
+    "arguments": {}
+  }
+}
+
+// Clear cache for specific crate
+{
+  "method": "tools/call",
+  "params": {
+    "name": "clear_cache",
+    "arguments": {
+      "crate_name": "serde"
+    }
+  }
+}
+
+// Clean up expired entries
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cleanup_cache",
+    "arguments": {}
+  }
+}
+```
 
 ## 🛣️ Roadmap
 
 ### Phase 1 (Current)
 - ✅ Basic MCP server with stdio transport
 - ✅ Core documentation tools
-- ✅ File-based caching
-- ✅ Trait implementation indexing
+- ✅ Docs.rs scraping architecture
+- ✅ Item-level caching with compression
+- ✅ Integrated cache management via MCP tools
 
 ### Phase 2 (Next)
-- 🔄 Full-text search with Tantivy
+- 🔄 Enhanced trait implementation detection
+- 🔄 Source code viewing from docs.rs
 - 🔄 WebSocket transport
-- 🔄 Advanced caching with compression
 - 🔄 Performance monitoring
 
 ### Phase 3 (Future)
@@ -337,9 +391,9 @@ This project is licensed under the **MIT OR Apache-2.0** license.
 ## 🙏 Acknowledgments
 
 - **[rmcp](https://crates.io/crates/rmcp)**: Rust MCP framework
-- **[rustdoc-types](https://crates.io/crates/rustdoc-types)**: Rustdoc JSON parsing
+- **[scraper](https://crates.io/crates/scraper)**: HTML parsing and CSS selection
 - **[crates_io_api](https://crates.io/crates/crates_io_api)**: crates.io API client
-- **[Tantivy](https://crates.io/crates/tantivy)**: Full-text search engine
+- **[docs.rs](https://docs.rs)**: Official Rust documentation hosting
 
 ## 📞 Support
 

@@ -1,6 +1,8 @@
 //! Type definitions for the documentation engine
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::SystemTime;
 
 /// Search result for crates.io search
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,33 +148,29 @@ pub struct SymbolSearchResult {
     pub module_path: String,
 }
 
-/// Rustdoc build configuration
+/// Scraper configuration for docs.rs fetching
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RustdocConfig {
-    pub target_dir: String,
-    pub features: Vec<String>,
-    pub all_features: bool,
-    pub no_default_features: bool,
-    pub target: Option<String>,
-    pub toolchain: String,
+pub struct ScraperConfig {
+    pub base_url: String,
     pub timeout_seconds: u64,
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+    pub user_agent: String,
 }
 
-impl Default for RustdocConfig {
+impl Default for ScraperConfig {
     fn default() -> Self {
         Self {
-            target_dir: "target/doc".to_string(),
-            features: Vec::new(),
-            all_features: true,
-            no_default_features: false,
-            target: None,
-            toolchain: "nightly".to_string(),
-            timeout_seconds: 300, // 5 minutes
+            base_url: "https://docs.rs".to_string(),
+            timeout_seconds: 30,
+            max_retries: 3,
+            retry_delay_ms: 500,
+            user_agent: "dociium-scraper/1.0".to_string(),
         }
     }
 }
 
-/// Cache entry metadata
+/// Cache entry metadata for tracking cached items
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub key: String,
@@ -181,6 +179,68 @@ pub struct CacheEntry {
     pub size_bytes: u64,
     pub version: String,
     pub checksum: String,
+    pub category: String,
+    pub metadata: HashMap<String, String>,
+}
+
+/// Item-level cache entry for individual documentation items
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemCacheEntry {
+    pub item_doc: ItemDoc,
+    pub cached_at: SystemTime,
+    pub version: String,
+    pub etag: Option<String>,
+}
+
+/// Crate-level cache entry for search indexes and metadata
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrateCacheEntry {
+    pub crate_name: String,
+    pub version: String,
+    pub search_index_data: Option<SearchIndexData>,
+    pub cached_at: SystemTime,
+    pub last_verified: SystemTime,
+}
+
+/// Search index data from docs.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexData {
+    pub crate_name: String,
+    pub version: String,
+    pub items: Vec<SearchIndexItem>,
+    pub paths: Vec<String>,
+}
+
+/// Individual item in the search index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexItem {
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub description: String,
+    pub parent_index: Option<usize>,
+}
+
+/// Cache configuration options
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    pub max_memory_entries: usize,
+    pub max_disk_size_mb: u64,
+    pub cleanup_interval_hours: u64,
+    pub entry_ttl_hours: u64,
+    pub enable_compression: bool,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            max_memory_entries: 1000,
+            max_disk_size_mb: 1000, // 1GB
+            cleanup_interval_hours: 24,
+            entry_ttl_hours: 168, // 1 week
+            enable_compression: true,
+        }
+    }
 }
 
 /// Error types for the documentation engine
@@ -192,14 +252,17 @@ pub enum DocEngineError {
     #[error("Version not found: {0}@{1}")]
     VersionNotFound(String, String),
 
-    #[error("Failed to download crate: {0}")]
-    DownloadError(#[from] reqwest::Error),
+    #[error("Failed to fetch from docs.rs: {0}")]
+    DocsRsFetchError(#[from] reqwest::Error),
 
-    #[error("Failed to build rustdoc: {0}")]
-    RustdocBuildError(String),
+    #[error("Failed to parse HTML content: {0}")]
+    HtmlParseError(String),
 
-    #[error("Failed to parse rustdoc JSON: {0}")]
-    RustdocParseError(#[from] serde_json::Error),
+    #[error("Failed to parse search index: {0}")]
+    SearchIndexParseError(String),
+
+    #[error("Failed to parse JSON: {0}")]
+    JsonParseError(#[from] serde_json::Error),
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
@@ -216,6 +279,9 @@ pub enum DocEngineError {
     #[error("Item not found: {0}")]
     ItemNotFound(String),
 
+    #[error("Documentation not available: {0}")]
+    DocumentationNotAvailable(String),
+
     #[error("Timeout error: {0}")]
     TimeoutError(String),
 
@@ -227,31 +293,54 @@ pub enum DocEngineError {
 
     #[error("Validation error: {0}")]
     ValidationError(String),
+
+    #[error("Scraper error: {0}")]
+    ScraperError(String),
+
+    #[error("URL construction error: {0}")]
+    UrlError(String),
 }
 
 /// Result type for the documentation engine
 pub type DocEngineResult<T> = Result<T, DocEngineError>;
 
-/// Build status for rustdoc generation
+/// Fetch status for documentation scraping
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum BuildStatus {
+pub enum FetchStatus {
     NotStarted,
     InProgress,
     Completed,
     Failed(String),
+    Cached,
 }
 
-/// Build metrics for monitoring
+/// Fetch metrics for monitoring scraping performance
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BuildMetrics {
+pub struct FetchMetrics {
     pub crate_name: String,
     pub version: String,
-    pub build_time_ms: u64,
-    pub index_time_ms: u64,
+    pub fetch_time_ms: u64,
+    pub parse_time_ms: u64,
     pub total_items: usize,
-    pub memory_usage_mb: u64,
-    pub cache_hit: bool,
-    pub status: BuildStatus,
+    pub cache_hits: usize,
+    pub cache_misses: usize,
+    pub network_requests: usize,
+    pub status: FetchStatus,
+}
+
+/// Cache statistics and metrics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheStatistics {
+    pub total_entries: usize,
+    pub memory_entries: usize,
+    pub disk_entries: usize,
+    pub total_size_bytes: u64,
+    pub memory_size_bytes: u64,
+    pub disk_size_bytes: u64,
+    pub hit_rate: f64,
+    pub miss_rate: f64,
+    pub evictions: u64,
+    pub oldest_entry_age_hours: f64,
 }
 
 /// Search options for symbol search
@@ -322,4 +411,42 @@ pub struct ModuleInfo {
     pub submodules: Vec<String>,
     pub visibility: String,
     pub attributes: Vec<String>,
+}
+
+/// Cache management operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CacheOperation {
+    Get,
+    Put,
+    Delete,
+    Clear,
+    Cleanup,
+    Stats,
+}
+
+/// Cache management result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheOperationResult {
+    pub operation: CacheOperation,
+    pub success: bool,
+    pub message: String,
+    pub items_affected: usize,
+    pub size_freed_bytes: u64,
+}
+
+/// Documentation source indicating where docs came from
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DocSource {
+    DocsRs { url: String, fetched_at: SystemTime },
+    Cache { cached_at: SystemTime },
+    Local { path: String },
+}
+
+/// Enhanced item documentation with source tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedItemDoc {
+    pub item_doc: ItemDoc,
+    pub source: DocSource,
+    pub quality_score: f32,
+    pub completeness_score: f32,
 }

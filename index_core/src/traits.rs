@@ -2,12 +2,30 @@
 
 use anyhow::Result;
 use fnv::FnvHashMap;
-use rustdoc_types::{Crate as RustdocCrate, Id, Impl, Item, ItemEnum, Path, Type};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
 use tracing::{debug, info};
 
 use crate::types::*;
+
+/// Search index data from docs.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexData {
+    pub crate_name: String,
+    pub version: String,
+    pub items: Vec<SearchIndexItem>,
+    pub paths: Vec<String>,
+}
+
+/// Individual item in the search index
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchIndexItem {
+    pub name: String,
+    pub kind: String,
+    pub path: String,
+    pub description: String,
+    pub parent_index: Option<usize>,
+}
 
 /// Index for trait implementations
 #[derive(Debug, Clone)]
@@ -17,22 +35,22 @@ pub struct TraitImplIndex {
     /// Map from type path to trait implementations
     type_to_impls: FnvHashMap<String, Vec<TypeImpl>>,
     /// Raw implementation data
-    implementations: FnvHashMap<Id, ImplData>,
+    implementations: FnvHashMap<String, ImplData>,
     /// Trait definitions
-    traits: FnvHashMap<Id, TraitData>,
+    traits: FnvHashMap<String, TraitData>,
     /// Type definitions
-    types: FnvHashMap<Id, TypeData>,
+    types: FnvHashMap<String, TypeData>,
 }
 
 /// Internal representation of an implementation
 #[derive(Debug, Clone)]
 struct ImplData {
-    id: Id,
-    trait_id: Option<Id>,
-    for_type: Type,
+    id: String,
+    trait_id: Option<String>,
+    for_type: String,
     generics: Vec<String>,
     where_clause: Option<String>,
-    items: Vec<Id>,
+    items: Vec<String>,
     is_blanket: bool,
     is_synthetic: bool,
     source_location: Option<SourceLocation>,
@@ -42,18 +60,18 @@ struct ImplData {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct TraitData {
-    id: Id,
+    id: String,
     name: String,
     path: String,
     generics: Vec<String>,
-    items: Vec<Id>,
+    items: Vec<String>,
 }
 
 /// Internal representation of a type
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct TypeData {
-    id: Id,
+    id: String,
     name: String,
     path: String,
     kind: String,
@@ -71,55 +89,63 @@ impl TraitImplIndex {
         }
     }
 
-    /// Build the index from rustdoc data
-    pub fn from_rustdoc(rustdoc_crate: &RustdocCrate) -> Result<Self> {
+    /// Build the index from search index data
+    pub fn from_search_index(search_data: &SearchIndexData) -> Result<Self> {
         let mut index = Self::new();
-        index.build_from_rustdoc(rustdoc_crate)?;
+        index.build_from_search_index(search_data)?;
         Ok(index)
     }
 
-    /// Build the index from rustdoc crate data
-    fn build_from_rustdoc(&mut self, rustdoc_crate: &RustdocCrate) -> Result<()> {
-        info!("Building trait implementation index");
+    /// Build the index from search index data
+    fn build_from_search_index(&mut self, search_data: &SearchIndexData) -> Result<()> {
+        info!("Building trait implementation index from search data");
 
-        // First pass: collect all traits and types
-        for (id, item) in &rustdoc_crate.index {
-            match &item.inner {
-                ItemEnum::Trait(trait_item) => {
+        // Process search index items
+        for item in &search_data.items {
+            match item.kind.as_str() {
+                "trait" => {
                     let trait_data = TraitData {
-                        id: id.clone(),
-                        name: item.name.clone().unwrap_or_default(),
-                        path: self.build_item_path(id, &rustdoc_crate.index),
-                        generics: self.extract_generics(&trait_item.generics),
-                        items: trait_item.items.clone(),
+                        id: item.path.clone(),
+                        name: item.name.clone(),
+                        path: item.path.clone(),
+                        generics: Vec::new(), // TODO: Extract from description/signature
+                        items: Vec::new(),
                     };
-                    self.traits.insert(id.clone(), trait_data);
+                    self.traits.insert(item.path.clone(), trait_data);
                 }
-                ItemEnum::Struct(_) | ItemEnum::Enum(_) | ItemEnum::Union(_) => {
+                "struct" | "enum" | "union" => {
                     let type_data = TypeData {
-                        id: id.clone(),
-                        name: item.name.clone().unwrap_or_default(),
-                        path: self.build_item_path(id, &rustdoc_crate.index),
-                        kind: self.get_item_kind(&item.inner),
+                        id: item.path.clone(),
+                        name: item.name.clone(),
+                        path: item.path.clone(),
+                        kind: item.kind.clone(),
                     };
-                    self.types.insert(id.clone(), type_data);
+                    self.types.insert(item.path.clone(), type_data);
+                }
+                "impl" => {
+                    // Process implementation - this is limited by search index data
+                    let impl_data = ImplData {
+                        id: item.path.clone(),
+                        trait_id: None, // TODO: Extract from description
+                        for_type: item.name.clone(),
+                        generics: Vec::new(),
+                        where_clause: None,
+                        items: Vec::new(),
+                        is_blanket: false,
+                        is_synthetic: false,
+                        source_location: None,
+                    };
+                    self.implementations.insert(item.path.clone(), impl_data);
                 }
                 _ => {}
             }
         }
 
-        // Second pass: process implementations
-        for (id, item) in &rustdoc_crate.index {
-            if let ItemEnum::Impl(impl_item) = &item.inner {
-                self.process_implementation(id, impl_item, item, &rustdoc_crate.index)?;
-            }
-        }
-
-        // Third pass: build lookup maps
-        self.build_lookup_maps()?;
+        // Build lookup maps with available data
+        self.build_lookup_maps_from_search_data(search_data)?;
 
         info!(
-            "Built trait implementation index with {} traits, {} types, {} implementations",
+            "Built trait implementation index from search data with {} traits, {} types, {} implementations",
             self.traits.len(),
             self.types.len(),
             self.implementations.len()
@@ -128,88 +154,39 @@ impl TraitImplIndex {
         Ok(())
     }
 
-    /// Process a single implementation
-    fn process_implementation(
-        &mut self,
-        impl_id: &Id,
-        impl_item: &Impl,
-        item: &Item,
-        _index: &HashMap<Id, Item>,
-    ) -> Result<()> {
-        let impl_data = ImplData {
-            id: impl_id.clone(),
-            trait_id: impl_item.trait_.as_ref().map(|path| path.id.clone()),
-            for_type: impl_item.for_.clone(),
-            generics: self.extract_generics(&impl_item.generics),
-            where_clause: self.extract_where_clause(&impl_item.generics),
-            items: impl_item.items.clone(),
-            is_blanket: impl_item.blanket_impl.is_some(),
-            is_synthetic: impl_item.is_synthetic,
-            source_location: item.span.as_ref().map(|span| SourceLocation {
-                file: span.filename.to_string_lossy().to_string(),
-                line: span.begin.0 as u32,
-                column: span.begin.1 as u32,
-                end_line: Some(span.end.0 as u32),
-                end_column: Some(span.end.1 as u32),
-            }),
-        };
+    /// Build lookup maps from search index data (limited functionality)
+    fn build_lookup_maps_from_search_data(&mut self, _search_data: &SearchIndexData) -> Result<()> {
+        debug!("Building trait implementation lookup maps from search data");
 
-        self.implementations.insert(impl_id.clone(), impl_data);
-        Ok(())
-    }
-
-    /// Build lookup maps for efficient querying
-    fn build_lookup_maps(&mut self) -> Result<()> {
-        debug!("Building trait implementation lookup maps");
+        // Note: Search index has limited trait implementation information
+        // This is a simplified version that works with available data
 
         for impl_data in self.implementations.values() {
-            // Map trait -> implementations
+            // For implementations found in search index
             if let Some(trait_id) = &impl_data.trait_id {
                 if let Some(trait_data) = self.traits.get(trait_id) {
                     let trait_impl = TraitImpl {
-                        for_type: self.type_to_string(&impl_data.for_type),
+                        for_type: impl_data.for_type.clone(),
                         trait_path: trait_data.path.clone(),
                         generics: impl_data.generics.clone(),
                         where_clause: impl_data.where_clause.clone(),
                         source_span: impl_data.source_location.clone(),
-                        impl_id: format!("{:?}", impl_data.id),
-                        items: self.build_impl_items(&impl_data.items),
+                        impl_id: impl_data.id.clone(),
+                        items: self.build_impl_items_from_search(&impl_data.items),
                         is_blanket: impl_data.is_blanket,
                         is_synthetic: impl_data.is_synthetic,
                     };
 
                     self.trait_to_impls
                         .entry(trait_data.path.clone())
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(trait_impl);
-                }
-            }
-
-            // Map type -> trait implementations
-            let for_type_str = self.type_to_string(&impl_data.for_type);
-            if let Some(trait_id) = &impl_data.trait_id {
-                if let Some(trait_data) = self.traits.get(trait_id) {
-                    let type_impl = TypeImpl {
-                        trait_path: trait_data.path.clone(),
-                        generics: impl_data.generics.clone(),
-                        where_clause: impl_data.where_clause.clone(),
-                        source_span: impl_data.source_location.clone(),
-                        impl_id: format!("{:?}", impl_data.id),
-                        items: self.build_impl_items(&impl_data.items),
-                        is_blanket: impl_data.is_blanket,
-                        is_synthetic: impl_data.is_synthetic,
-                    };
-
-                    self.type_to_impls
-                        .entry(for_type_str)
-                        .or_insert_with(Vec::new)
-                        .push(type_impl);
                 }
             }
         }
 
         debug!(
-            "Built lookup maps: {} trait entries, {} type entries",
+            "Built lookup maps from search data: {} trait entries, {} type entries",
             self.trait_to_impls.len(),
             self.type_to_impls.len()
         );
@@ -286,136 +263,20 @@ impl TraitImplIndex {
         }
     }
 
-    // Helper methods
+    // Helper methods for search index data
 
-    /// Build item path from ID
-    fn build_item_path(&self, id: &Id, index: &HashMap<Id, Item>) -> String {
-        // This is a simplified implementation
-        // In practice, you'd need to traverse the module hierarchy
-        if let Some(item) = index.get(id) {
-            item.name.clone().unwrap_or_else(|| format!("{:?}", id))
-        } else {
-            format!("{:?}", id)
-        }
-    }
-
-    /// Extract generics from rustdoc generics
-    fn extract_generics(&self, generics: &rustdoc_types::Generics) -> Vec<String> {
-        generics
-            .params
-            .iter()
-            .filter_map(|param| match &param.kind {
-                rustdoc_types::GenericParamDefKind::Type { .. } => Some(param.name.clone()),
-                rustdoc_types::GenericParamDefKind::Const { .. } => Some(param.name.clone()),
-                rustdoc_types::GenericParamDefKind::Lifetime { .. } => Some(param.name.clone()),
-            })
-            .collect()
-    }
-
-    /// Extract where clause from generics
-    fn extract_where_clause(&self, generics: &rustdoc_types::Generics) -> Option<String> {
-        if generics.where_predicates.is_empty() {
-            None
-        } else {
-            // Simplified where clause extraction
-            Some(format!(
-                "where /* {} predicates */",
-                generics.where_predicates.len()
-            ))
-        }
-    }
-
-    /// Extract trait ID from path reference
-    #[allow(dead_code)]
-    fn extract_trait_id(&self, trait_path: &Path) -> Id {
-        trait_path.id.clone()
-    }
-
-    /// Convert type to string representation
-    fn type_to_string(&self, ty: &Type) -> String {
-        match ty {
-            Type::ResolvedPath(path) => path.path.clone(),
-            Type::DynTrait(dyn_trait) => {
-                format!(
-                    "dyn {}",
-                    dyn_trait
-                        .traits
-                        .first()
-                        .map(|t| t.trait_.path.clone())
-                        .unwrap_or_else(|| "Trait".to_string())
-                )
-            }
-            Type::Generic(name) => name.clone(),
-            Type::Primitive(name) => name.clone(),
-            Type::FunctionPointer(_) => "fn".to_string(),
-            Type::Tuple(types) => {
-                let type_strs: Vec<String> = types.iter().map(|t| self.type_to_string(t)).collect();
-                format!("({})", type_strs.join(", "))
-            }
-            Type::Slice(inner) => format!("[{}]", self.type_to_string(inner)),
-            Type::Array { type_, len } => format!("[{}; {}]", self.type_to_string(type_), len),
-            Type::ImplTrait(bounds) => format!("impl {}", bounds.len()),
-            Type::Infer => "_".to_string(),
-            Type::RawPointer { is_mutable, type_ } => {
-                format!(
-                    "*{} {}",
-                    if *is_mutable { "mut" } else { "const" },
-                    self.type_to_string(type_)
-                )
-            }
-            Type::BorrowedRef {
-                lifetime: _,
-                is_mutable,
-                type_,
-            } => {
-                format!(
-                    "&{} {}",
-                    if *is_mutable { "mut " } else { "" },
-                    self.type_to_string(type_)
-                )
-            }
-            Type::QualifiedPath {
-                name,
-                args: _,
-                self_type,
-                trait_,
-            } => {
-                format!(
-                    "<{} as {}>::{}",
-                    self.type_to_string(self_type),
-                    trait_.as_ref().map(|t| t.path.clone()).unwrap_or_default(),
-                    name
-                )
-            }
-            Type::Pat { .. } => "pattern".to_string(),
-        }
-    }
-
-    /// Get item kind as string
-    fn get_item_kind(&self, item: &ItemEnum) -> String {
-        match item {
-            ItemEnum::Struct(_) => "struct".to_string(),
-            ItemEnum::Enum(_) => "enum".to_string(),
-            ItemEnum::Union(_) => "union".to_string(),
-            ItemEnum::Trait(_) => "trait".to_string(),
-            ItemEnum::Function(_) => "function".to_string(),
-            ItemEnum::TypeAlias(_) => "type_alias".to_string(),
-            ItemEnum::Constant { .. } => "constant".to_string(),
-            ItemEnum::Static(_) => "static".to_string(),
-            ItemEnum::Macro(_) => "macro".to_string(),
-            _ => "other".to_string(),
-        }
-    }
-
-    /// Build implementation items
-    fn build_impl_items(&self, item_ids: &[Id]) -> Vec<ImplItem> {
-        // Simplified implementation - in practice, you'd resolve the actual items
-        item_ids
+    /// Build implementation items from search index (simplified)
+    fn build_impl_items_from_search(&self, item_paths: &[String]) -> Vec<ImplItem> {
+        item_paths
             .iter()
             .enumerate()
-            .map(|(i, _id)| ImplItem {
-                name: format!("item_{}", i),
-                kind: "unknown".to_string(),
+            .map(|(i, path)| ImplItem {
+                name: path
+                    .split("::")
+                    .last()
+                    .unwrap_or(&format!("item_{i}"))
+                    .to_string(),
+                kind: "method".to_string(), // Assume methods for impl items
                 signature: None,
                 doc: None,
                 source_location: None,
@@ -455,59 +316,47 @@ mod tests {
     }
 
     #[test]
-    fn test_type_to_string() {
-        let index = TraitImplIndex::new();
-
-        // Test primitive type
-        let primitive = Type::Primitive("u32".to_string());
-        assert_eq!(index.type_to_string(&primitive), "u32");
-
-        // Test generic type
-        let generic = Type::Generic("T".to_string());
-        assert_eq!(index.type_to_string(&generic), "T");
-
-        // Test tuple type
-        let tuple = Type::Tuple(vec![
-            Type::Primitive("u32".to_string()),
-            Type::Primitive("String".to_string()),
-        ]);
-        assert_eq!(index.type_to_string(&tuple), "(u32, String)");
-    }
-
-    #[test]
-    fn test_get_item_kind() {
-        let index = TraitImplIndex::new();
-
-        let struct_item = ItemEnum::Struct(rustdoc_types::Struct {
-            kind: rustdoc_types::StructKind::Unit,
-            generics: rustdoc_types::Generics {
-                params: Vec::new(),
-                where_predicates: Vec::new(),
-            },
-            impls: Vec::new(),
-        });
-
-        assert_eq!(index.get_item_kind(&struct_item), "struct");
-    }
-
-    #[test]
-    fn test_extract_generics() {
-        let index = TraitImplIndex::new();
-
-        let mut generics = rustdoc_types::Generics {
-            params: Vec::new(),
-            where_predicates: Vec::new(),
+    fn test_from_search_index() {
+        let search_data = SearchIndexData {
+            crate_name: "test_crate".to_string(),
+            version: "1.0.0".to_string(),
+            items: vec![
+                SearchIndexItem {
+                    name: "TestTrait".to_string(),
+                    kind: "trait".to_string(),
+                    path: "test_crate::TestTrait".to_string(),
+                    description: "A test trait".to_string(),
+                    parent_index: None,
+                },
+                SearchIndexItem {
+                    name: "TestStruct".to_string(),
+                    kind: "struct".to_string(),
+                    path: "test_crate::TestStruct".to_string(),
+                    description: "A test struct".to_string(),
+                    parent_index: None,
+                },
+            ],
+            paths: vec!["test_crate".to_string()],
         };
-        generics.params.push(rustdoc_types::GenericParamDef {
-            name: "T".to_string(),
-            kind: rustdoc_types::GenericParamDefKind::Type {
-                bounds: Vec::new(),
-                default: None,
-                is_synthetic: false,
-            },
-        });
 
-        let extracted = index.extract_generics(&generics);
-        assert_eq!(extracted, vec!["T"]);
+        let index = TraitImplIndex::from_search_index(&search_data).unwrap();
+        assert_eq!(index.traits.len(), 1);
+        assert_eq!(index.types.len(), 1);
+    }
+
+    #[test]
+    fn test_build_impl_items_from_search() {
+        let index = TraitImplIndex::new();
+
+        let item_paths = vec![
+            "test_crate::MyStruct::method1".to_string(),
+            "test_crate::MyStruct::method2".to_string(),
+        ];
+
+        let impl_items = index.build_impl_items_from_search(&item_paths);
+        assert_eq!(impl_items.len(), 2);
+        assert_eq!(impl_items[0].name, "method1");
+        assert_eq!(impl_items[1].name, "method2");
+        assert_eq!(impl_items[0].kind, "method");
     }
 }

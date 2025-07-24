@@ -117,7 +117,7 @@ impl Fetcher {
             .client
             .get_crate(name)
             .await
-            .with_context(|| format!("Failed to get crate info for: {}", name))?;
+            .with_context(|| format!("Failed to get crate info for: {name}"))?;
 
         let crate_data = response.crate_data;
         let versions = response.versions;
@@ -195,10 +195,7 @@ impl Fetcher {
         self.rate_limiter.until_ready().await;
 
         // Get download URL
-        let download_url = format!(
-            "https://crates.io/api/v1/crates/{}/{}/download",
-            name, version
-        );
+        let download_url = format!("https://crates.io/api/v1/crates/{name}/{version}/download");
 
         // Download the crate tarball
         let response = self
@@ -206,7 +203,7 @@ impl Fetcher {
             .get(&download_url)
             .send()
             .await
-            .with_context(|| format!("Failed to download crate {}@{}", name, version))?;
+            .with_context(|| format!("Failed to download crate {name}@{version}"))?;
 
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(
@@ -235,7 +232,7 @@ impl Fetcher {
 
         archive
             .unpack(temp_dir.path())
-            .with_context(|| format!("Failed to extract crate {}@{}", name, version))?;
+            .with_context(|| format!("Failed to extract crate {name}@{version}"))?;
 
         info!(
             "Successfully downloaded and extracted crate: {}@{}",

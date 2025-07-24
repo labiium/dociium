@@ -12,7 +12,7 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-rustdoc-types = { workspace = true }
+# rustdoc-types = { workspace = true } # Removed - now using search index data
 # tantivy = { workspace = true } # Temporarily disabled due to build issues
 futures = { workspace = true }
 

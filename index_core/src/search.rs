@@ -116,13 +116,13 @@ impl SearchEngine {
 
         if !query.is_empty() {
             results.push(EnhancedSearchResult {
-                path: format!("mock::{}", query),
+                path: format!("mock::{query}"),
                 kind: "function".to_string(),
                 score: 1.0,
-                doc_summary: Some(format!("Mock documentation for {}", query)),
+                doc_summary: Some(format!("Mock documentation for {query}")),
                 source_location: None,
                 visibility: "public".to_string(),
-                signature: Some(format!("fn {}() -> ()", query)),
+                signature: Some(format!("fn {query}() -> ()")),
                 module_path: "mock".to_string(),
                 match_highlights: vec![MatchHighlight {
                     field: "name".to_string(),
@@ -154,7 +154,7 @@ impl SearchEngine {
 
         let mut results = Vec::new();
         if !term.is_empty() && limit > 0 {
-            results.push((format!("mock::{}", term), 1.0));
+            results.push((format!("mock::{term}"), 1.0));
         }
 
         Ok(results)
@@ -166,9 +166,9 @@ impl SearchEngine {
 
         let mut suggestions = HashSet::new();
         if !prefix.is_empty() && limit > 0 {
-            suggestions.insert(format!("{}Function", prefix));
-            suggestions.insert(format!("{}Struct", prefix));
-            suggestions.insert(format!("{}Trait", prefix));
+            suggestions.insert(format!("{prefix}Function"));
+            suggestions.insert(format!("{prefix}Struct"));
+            suggestions.insert(format!("{prefix}Trait"));
         }
 
         let mut results: Vec<String> = suggestions.into_iter().collect();
@@ -188,7 +188,7 @@ impl SearchEngine {
                 path: term.to_string(),
                 kind: "exact_match".to_string(),
                 score: 2.0,
-                doc_summary: Some(format!("Exact match for {}", term)),
+                doc_summary: Some(format!("Exact match for {term}")),
                 source_location: None,
                 visibility: "public".to_string(),
                 signature: None,
@@ -270,7 +270,7 @@ impl QueryBuilder {
             let must_part = self
                 .must_terms
                 .iter()
-                .map(|t| format!("+{}", t))
+                .map(|t| format!("+{t}"))
                 .collect::<Vec<_>>()
                 .join(" ");
             parts.push(must_part);
@@ -284,7 +284,7 @@ impl QueryBuilder {
             let must_not_part = self
                 .must_not_terms
                 .iter()
-                .map(|t| format!("-{}", t))
+                .map(|t| format!("-{t}"))
                 .collect::<Vec<_>>()
                 .join(" ");
             parts.push(must_not_part);

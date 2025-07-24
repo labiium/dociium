@@ -95,6 +95,14 @@ pub struct SearchSymbolsParams {
     pub version: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClearCacheParams {
+    pub crate_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CacheStatsParams {}
+
 /// Utility to validate crate names
 fn validate_crate_name(name: &str) -> Result<(), ErrorData> {
     if name.is_empty() {
@@ -161,7 +169,7 @@ fn validate_item_path(path: &str) -> Result<(), ErrorData> {
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
             return Err(ErrorData::invalid_params(
-                format!("Invalid identifier in path: {}", part),
+                format!("Invalid identifier in path: {part}"),
                 None,
             ));
         }
@@ -200,11 +208,11 @@ impl RustDocsMcpServer {
             .search_crates(&query, limit.unwrap_or(10))
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to search crates: {}", e), None)
+                ErrorData::internal_error(format!("Failed to search crates: {e}"), None)
             })?;
 
         let json_content = serde_json::to_string(&results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -221,11 +229,11 @@ impl RustDocsMcpServer {
         validate_crate_name(&name)?;
 
         let info = self.engine.crate_info(&name).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get crate info: {}", e), None)
+            ErrorData::internal_error(format!("Failed to get crate info: {e}"), None)
         })?;
 
         let json_content = serde_json::to_string(&info)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -251,11 +259,11 @@ impl RustDocsMcpServer {
             .get_item_doc(&crate_name, &path, version.as_deref())
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to get item documentation: {}", e), None)
+                ErrorData::internal_error(format!("Failed to get item documentation: {e}"), None)
             })?;
 
         let json_content = serde_json::to_string(&doc)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -282,13 +290,13 @@ impl RustDocsMcpServer {
             .await
             .map_err(|e| {
                 ErrorData::internal_error(
-                    format!("Failed to list trait implementations: {}", e),
+                    format!("Failed to list trait implementations: {e}"),
                     None,
                 )
             })?;
 
         let json_content = serde_json::to_string(&impls)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -314,14 +322,11 @@ impl RustDocsMcpServer {
             .list_impls_for_type(&crate_name, &type_path, version.as_deref())
             .await
             .map_err(|e| {
-                ErrorData::internal_error(
-                    format!("Failed to list type implementations: {}", e),
-                    None,
-                )
+                ErrorData::internal_error(format!("Failed to list type implementations: {e}"), None)
             })?;
 
         let json_content = serde_json::to_string(&impls)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -357,11 +362,11 @@ impl RustDocsMcpServer {
             .source_snippet(&crate_name, &item_path, context, version.as_deref())
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to get source snippet: {}", e), None)
+                ErrorData::internal_error(format!("Failed to get source snippet: {e}"), None)
             })?;
 
         let json_content = serde_json::to_string(&snippet)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -405,13 +410,13 @@ impl RustDocsMcpServer {
             .await
             .map_err(|e| {
                 ErrorData::internal_error(
-                    format!("Failed to get implementation context: {}", e),
+                    format!("Failed to get implementation context: {e}"),
                     None,
                 )
             })?;
 
         let json_content = serde_json::to_string(&context)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -467,11 +472,71 @@ impl RustDocsMcpServer {
             )
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to search symbols: {}", e), None)
+                ErrorData::internal_error(format!("Failed to search symbols: {e}"), None)
             })?;
 
         let json_content = serde_json::to_string(&results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Get cache statistics
+    #[tool(description = "Get cache statistics and performance metrics")]
+    pub async fn get_cache_stats(
+        &self,
+        _params: Parameters<CacheStatsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let stats = self.engine.get_cache_stats().await.map_err(|e| {
+            ErrorData::internal_error(format!("Failed to get cache stats: {e}"), None)
+        })?;
+
+        let json_content = serde_json::to_string(&stats)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Clear cache entries
+    #[tool(description = "Clear cache entries for all crates or a specific crate")]
+    pub async fn clear_cache(
+        &self,
+        params: Parameters<ClearCacheParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = if let Some(crate_name) = params.0.crate_name {
+            // Clear cache for specific crate
+            validate_crate_name(&crate_name)?;
+            self.engine
+                .clear_crate_cache(&crate_name)
+                .await
+                .map_err(|e| {
+                    ErrorData::internal_error(format!("Failed to clear crate cache: {e}"), None)
+                })?
+        } else {
+            // Clear all cache
+            self.engine.clear_all_cache().await.map_err(|e| {
+                ErrorData::internal_error(format!("Failed to clear all cache: {e}"), None)
+            })?
+        };
+
+        let json_content = serde_json::to_string(&result)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Cleanup expired cache entries
+    #[tool(description = "Remove expired cache entries based on TTL")]
+    pub async fn cleanup_cache(
+        &self,
+        _params: Parameters<CacheStatsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self.engine.cleanup_expired_cache().await.map_err(|e| {
+            ErrorData::internal_error(format!("Failed to cleanup cache: {e}"), None)
+        })?;
+
+        let json_content = serde_json::to_string(&result)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -488,7 +553,7 @@ impl ServerHandler for RustDocsMcpServer {
                 version: env!("CARGO_PKG_VERSION").to_string(),
             },
             instructions: Some(
-                "Rust Documentation MCP Server - Query Rust crate documentation, explore traits, implementations, and source code. Use search_crates to find crates, crate_info for details, get_item_doc for documentation, list_trait_impls/list_impls_for_type for implementation exploration, source_snippet for code viewing, and search_symbols for symbol discovery."
+                "Rust Documentation MCP Server - Query Rust crate documentation, explore traits, implementations, and source code. Use search_crates to find crates, crate_info for details, get_item_doc for documentation, list_trait_impls/list_impls_for_type for implementation exploration, source_snippet for code viewing, search_symbols for symbol discovery, get_cache_stats for cache statistics, clear_cache to clear cache entries, and cleanup_cache to remove expired entries."
                     .to_string(),
             ),
         }

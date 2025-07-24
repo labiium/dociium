@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     // Create cache directory
     let cache_dir = std::env::var("RDOCS_CACHE_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        format!("{}/.cache/rdocs-mcp", home)
+        format!("{home}/.cache/rdocs-mcp")
     });
 
     tracing::info!("Using cache directory: {}", cache_dir);
