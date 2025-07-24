@@ -4,8 +4,9 @@
 
 use anyhow::Result;
 use mcp_server::{
-    CrateInfoParams, GetItemDocParams, ListImplsForTypeParams, ListTraitImplsParams,
-    RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams, SourceSnippetParams,
+    CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
+    ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
+    SourceSnippetParams,
 };
 use rmcp::{handler::server::tool::Parameters, model::CallToolResult, ServerHandler};
 use tempfile::TempDir;
@@ -419,4 +420,72 @@ async fn test_response_performance() {
         "Response took too long: {:?}",
         duration
     );
+}
+
+#[tokio::test]
+async fn test_get_implementation_tool_available() {
+    let (server, _temp_dir) = create_test_server().await.unwrap();
+
+    // Should be able to get server info
+    let info = server.get_info();
+    assert!(info.capabilities.tools.is_some());
+
+    // Test that the get_implementation tool can be called (even if it fails)
+    // This verifies the tool is properly registered in the MCP server
+    let params = Parameters(GetImplementationParams {
+        language: "python".to_string(),
+        package_name: "test".to_string(),
+        item_path: "test.py#function".to_string(),
+        context_path: None,
+    });
+
+    // The tool should exist and be callable (even if it fails due to missing package)
+    let response = server.get_implementation(params).await;
+    // We expect this to fail, but it proves the tool is registered
+    assert!(response.is_err());
+}
+
+#[tokio::test]
+async fn test_get_implementation_basic() {
+    let (server, _temp_dir) = create_test_server().await.unwrap();
+
+    let params = Parameters(GetImplementationParams {
+        language: "python".to_string(),
+        package_name: "nonexistent".to_string(),
+        item_path: "nonexistent.py#test_function".to_string(),
+        context_path: None,
+    });
+
+    let response = server.get_implementation(params).await;
+
+    // This should fail gracefully since the package doesn't exist
+    // but it validates that the tool exists and accepts parameters correctly
+    assert!(response.is_err());
+}
+
+#[tokio::test]
+async fn test_get_implementation_invalid_params() {
+    let (server, _temp_dir) = create_test_server().await.unwrap();
+
+    // Test empty package name
+    let params = Parameters(GetImplementationParams {
+        language: "python".to_string(),
+        package_name: "".to_string(),
+        item_path: "test.py#function".to_string(),
+        context_path: None,
+    });
+
+    let response = server.get_implementation(params).await;
+    assert!(response.is_err());
+
+    // Test invalid item_path format
+    let params = Parameters(GetImplementationParams {
+        language: "python".to_string(),
+        package_name: "test".to_string(),
+        item_path: "invalid_format".to_string(),
+        context_path: None,
+    });
+
+    let response = server.get_implementation(params).await;
+    assert!(response.is_err());
 }

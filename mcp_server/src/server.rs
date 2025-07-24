@@ -75,6 +75,18 @@ pub struct SourceSnippetParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetImplementationParams {
+    /// The language of the package ("python" or "node").
+    pub language: String,
+    /// The name of the package as known to its package manager (e.g., "curly", "express").
+    pub package_name: String,
+    /// Path to the item within the package, format: "path/to/file#item_name".
+    pub item_path: String,
+    /// Optional path to a project/environment to search within (especially for Node.js). Defaults to current dir.
+    pub context_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchSymbolsParams {
     pub crate_name: String,
     pub query: String,
@@ -349,6 +361,56 @@ impl RustDocsMcpServer {
             })?;
 
         let json_content = serde_json::to_string(&snippet)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Get the implementation and documentation for a code item from a local environment
+    #[tool(
+        description = "Get the implementation and documentation for an item from an installed package (Python/Node.js)."
+    )]
+    pub async fn get_implementation(
+        &self,
+        params: Parameters<GetImplementationParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let GetImplementationParams {
+            language,
+            package_name,
+            item_path,
+            context_path,
+        } = params.0;
+
+        if package_name.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "A valid package_name is required.",
+                None,
+            ));
+        }
+        if item_path.trim().is_empty() || !item_path.contains('#') {
+            return Err(ErrorData::invalid_params(
+                "item_path must be in the format 'path/to/file#item_name'.",
+                None,
+            ));
+        }
+
+        let context = self
+            .engine
+            .get_implementation_context(
+                &language,
+                &package_name,
+                &item_path,
+                context_path.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(
+                    format!("Failed to get implementation context: {}", e),
+                    None,
+                )
+            })?;
+
+        let json_content = serde_json::to_string(&context)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {}", e), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))

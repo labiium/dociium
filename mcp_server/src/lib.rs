@@ -4,8 +4,9 @@
 //! including parameter types and the main server implementation.
 
 pub use crate::server::{
-    CrateInfoParams, GetItemDocParams, ListImplsForTypeParams, ListTraitImplsParams,
-    RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams, SourceSnippetParams,
+    CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
+    ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
+    SourceSnippetParams,
 };
 
 // Re-export commonly used dependencies for tests

@@ -1,6 +1,6 @@
-# DOCIIUM: Rust Documentation MCP Server
+# DOCIIUM: Multi-Language Documentation & Code MCP Server
 
-A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to Rust crate documentation, trait implementations, and source code exploration. Built in Rust for maximum performance and reliability.
+A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to documentation and source code for multiple languages, including **Rust**, **Python**, and **Node.js (JavaScript/TypeScript)**. Built in Rust for maximum performance and reliability.
 
 ## 🚀 Features
 
@@ -8,9 +8,10 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 - **📦 Crate Search**: Search and discover Rust crates from crates.io
 - **📖 Documentation Access**: Retrieve formatted documentation for any item in a crate
 - **🔍 Symbol Search**: Full-text search across crate symbols with fuzzy matching *(feature gated until Tantivy support lands)*
-- **🧬 Trait Exploration**: List trait implementations and type relationships
-- **📝 Source Code**: Access source code snippets with context
-- **⚡ Smart Caching**: Intelligent disk and memory caching for fast responses
+- 🧬 **Trait Exploration**: List trait implementations and type relationships
+- 📝 **Source Code**: Access source code snippets with context
+- ⚡ **Smart Caching**: Intelligent disk and memory caching for fast responses
+- 🌐 **Multi-Language Support**: Fetch implementation context from local Python (`venv`/`conda`) and Node.js (`node_modules`) environments.
 
 ### MCP Tools Available
 
@@ -22,7 +23,55 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 | `list_trait_impls` | List trait implementations | `crate_name`, `trait_path`, `version?` |
 | `list_impls_for_type` | List traits implemented by a type | `crate_name`, `type_path`, `version?` |
 | `source_snippet` | Get source code with context | `crate_name`, `item_path`, `context_lines?`, `version?` |
-| `search_symbols` | Search symbols within a crate | `crate_name`, `query`, `kinds?`, `limit?`, `version?` |
+| `search_symbols` | (Rust) Search symbols within a crate | `crate_name`, `query`, `kinds?`, `limit?`, `version?` |
+| `get_implementation` | (Python/Node) Get implementation from a local environment | `language`, `package_name`, `item_path`, `context_path?` |
+
+### Usage Examples
+
+#### Python Package Analysis
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_implementation",
+    "arguments": {
+      "language": "python",
+      "package_name": "requests",
+      "item_path": "api.py#get"
+    }
+  }
+}
+```
+
+#### Node.js Package Analysis
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_implementation",
+    "arguments": {
+      "language": "node",
+      "package_name": "express",
+      "item_path": "lib/express.js#createApplication",
+      "context_path": "/path/to/your/project"
+    }
+  }
+}
+```
+
+#### Rust Crate Documentation
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "get_item_doc",
+    "arguments": {
+      "crate_name": "tokio",
+      "path": "sync::mpsc::channel"
+    }
+  }
+}
+```
 
 ## 🏗️ Architecture
 
@@ -31,8 +80,9 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 │         MCP Server          │ ← rmcp framework
 └┬────────────────────────────┘
  │
- ├─ Tools (handlers)
+ ├─ Tools (MCP Handlers)
  │  ├─ search_crates
+ │  ├─ get_implementation
  │  ├─ crate_info
  │  ├─ get_item_doc
  │  ├─ list_trait_impls
@@ -40,14 +90,17 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
  │  ├─ source_snippet
  │  └─ search_symbols
  │
- ├─ DocEngine (doc_engine crate)
- │  ├─ Fetcher: Downloads crates & metadata
- │  ├─ Cache: Persistent storage
- │  └─ RustdocBuilder: Generates JSON docs
- │
- └─ IndexCore (index_core crate)
-    ├─ SymbolIndex: Full-text search
-    └─ TraitImplIndex: Trait relationships
+ └─ DocEngine (doc_engine crate)
+    ├─ Package Finder: Locates packages in local environments (pip, npm)
+    ├─ Crates.io Fetcher: Downloads Rust crates
+    ├─ Language Processors
+    │  ├─ Rust (uses rustdoc)
+    │  ├─ Python (uses tree-sitter)
+    │  └─ Node.js (uses tree-sitter)
+    ├─ Cache: Persistent storage
+    └─ IndexCore (index_core crate)
+       ├─ SymbolIndex: Full-text search
+       └─ TraitImplIndex: Trait relationships
 ```
 
 ## 🛠️ Installation

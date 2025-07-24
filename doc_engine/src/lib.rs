@@ -2,6 +2,7 @@
 //!
 //! This crate provides functionality to fetch Rust crate documentation,
 //! build rustdoc JSON, and provide a high-level API for querying documentation.
+//! It also supports fetching source code from local environments for Python and Node.js.
 
 use anyhow::{Context, Result};
 use index_core::{IndexCore, SymbolIndex, TraitImplIndex};
@@ -11,14 +12,18 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
     num::NonZeroUsize,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 use tokio::fs;
 use tracing::info;
 
+use crate::processors::traits::{ImplementationContext, LanguageProcessor};
+
 pub mod cache;
 pub mod fetcher;
+pub mod finder;
+pub mod processors;
 pub mod rustdoc;
 pub mod types;
 
@@ -42,6 +47,8 @@ pub struct DocEngine {
     cache: Arc<cache::Cache>,
     index: Arc<IndexCore>,
     memory_cache: Arc<Mutex<LruCache<String, Arc<CrateDocumentation>>>>,
+    python_processor: Arc<processors::python::PythonProcessor>,
+    node_processor: Arc<processors::node::NodeProcessor>,
 }
 
 impl DocEngine {
@@ -56,12 +63,16 @@ impl DocEngine {
         let cache = Arc::new(cache::Cache::new(cache_dir)?);
         let index = Arc::new(IndexCore::new(cache_dir.join("index"))?);
         let memory_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())));
+        let python_processor = Arc::new(processors::python::PythonProcessor::default());
+        let node_processor = Arc::new(processors::node::NodeProcessor::default());
 
         Ok(Self {
             fetcher,
             cache,
             index,
             memory_cache,
+            python_processor,
+            node_processor,
         })
     }
 
@@ -131,6 +142,58 @@ impl DocEngine {
     ) -> Result<Vec<SymbolSearchResult>> {
         let docs = self.ensure_crate_docs(crate_name, version).await?;
         docs.search_symbols(query, kinds, limit)
+    }
+
+    /// Get implementation context from a local environment for various languages.
+    pub async fn get_implementation_context(
+        &self,
+        language: &str,
+        package_name: &str,
+        item_path: &str, // Format: "path/to/file.py#my_function"
+        context_path: Option<&str>,
+    ) -> Result<ImplementationContext> {
+        let (relative_path, item_name) = item_path
+            .split_once('#')
+            .context("Invalid item_path format. Expected 'path/to/file#item_name'")?;
+
+        let default_context_path = PathBuf::from(".");
+        let context_path = context_path
+            .map(PathBuf::from)
+            .unwrap_or(default_context_path);
+
+        match language {
+            "python" => {
+                self.python_processor
+                    .get_implementation_context(
+                        package_name,
+                        &context_path,
+                        relative_path,
+                        item_name,
+                    )
+                    .await
+            }
+            "node" => {
+                self.node_processor
+                    .get_implementation_context(
+                        package_name,
+                        &context_path,
+                        relative_path,
+                        item_name,
+                    )
+                    .await
+            }
+            "rust" => {
+                // Rust logic is crate-based, not easily adaptable to this model.
+                // Use the existing rust-specific tools instead.
+                anyhow::bail!(
+                    "For Rust, please use crate-specific tools like `get_item_doc` and `source_snippet`."
+                )
+            }
+            _ => anyhow::bail!(
+                "Unsupported language: '{}'. Supported languages are 'python' and 'node'.",
+                language
+            ),
+        }
     }
 
     /// Ensure crate documentation is available and indexed
