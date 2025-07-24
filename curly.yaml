@@ -1,1 +1,3 @@
 language: rust
+ignore:
+  - rust-sdk

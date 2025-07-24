@@ -13,4 +13,3 @@ pub use rmcp;
 pub use serde_json;
 
 pub mod server;
-pub mod tools;

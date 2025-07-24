@@ -19,7 +19,7 @@ async fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
-        .with_target(true)
+        .with_target(false)
         .init();
 
     tracing::info!(

@@ -128,20 +128,40 @@ impl RustdocBuilder {
             ));
         }
 
+        // Find the generated JSON file in the target directory
+        let doc_dir = temp_output_dir.path().join("doc");
+
+        let final_json_path = if doc_dir.exists() {
+            // Look for the JSON file in the doc directory
+            let mut json_file = None;
+            let mut entries = fs::read_dir(&doc_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    json_file = Some(path);
+                    break;
+                }
+            }
+            json_file.ok_or_else(|| anyhow::anyhow!("No JSON file found in doc directory"))?
+        } else {
+            // Fallback to the original path
+            json_output_path
+        };
+
         // Read and parse the generated JSON
-        if !json_output_path.exists() {
+        if !final_json_path.exists() {
             return Err(anyhow::anyhow!(
                 "Rustdoc JSON output not found at: {:?}",
-                json_output_path
+                final_json_path
             ));
         }
 
-        let json_content = fs::read_to_string(&json_output_path)
+        let json_content = fs::read_to_string(&final_json_path)
             .await
             .context("Failed to read rustdoc JSON output")?;
 
-        let rustdoc_crate: RustdocCrate =
-            serde_json::from_str(&json_content).context("Failed to parse rustdoc JSON output")?;
+        let rustdoc_crate: RustdocCrate = serde_json::from_str(&json_content)
+            .map_err(|e| anyhow::anyhow!("Failed to parse rustdoc JSON output: {}", e))?;
 
         info!(
             "Successfully built rustdoc JSON with {} items",
@@ -196,7 +216,6 @@ impl RustdocBuilder {
         cmd.arg("--");
         cmd.arg("-Zunstable-options");
         cmd.arg("--output-format").arg("json");
-        cmd.arg("-o").arg(output_dir);
 
         // Additional rustdoc flags
         for flag in &self.config.rustdoc_flags {
@@ -207,6 +226,9 @@ impl RustdocBuilder {
         for (key, value) in &self.config.env_vars {
             cmd.env(key, value);
         }
+
+        // Use CARGO_TARGET_DIR to control output location
+        cmd.env("CARGO_TARGET_DIR", output_dir);
 
         // Security: Set restrictive environment
         cmd.env("CARGO_HTTP_TIMEOUT", "30");
@@ -239,7 +261,7 @@ impl RustdocBuilder {
 
     /// Find the root directory of the crate (handles nested directories in tarballs)
     async fn find_crate_root(&self) -> Result<PathBuf> {
-        let mut current_dir = self.crate_dir.clone();
+        let current_dir = self.crate_dir.clone();
 
         // Check if current directory has Cargo.toml
         if current_dir.join("Cargo.toml").exists() {
@@ -294,7 +316,6 @@ impl RustdocBuilder {
                 .errors
                 .push("Rustdoc JSON contains no items".to_string());
         }
-
 
         // Check for common issues
         let mut public_items = 0;

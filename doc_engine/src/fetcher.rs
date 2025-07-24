@@ -8,12 +8,12 @@ use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use chrono::prelude::*;
+
+use std::fmt;
 use std::num::NonZeroU32;
 use std::time::Duration;
 use tar::Archive;
 use tempfile::TempDir;
-use std::fmt;
 use tracing::{debug, info, instrument, warn};
 
 use crate::types::*;
@@ -169,7 +169,7 @@ impl Fetcher {
             homepage: crate_data.homepage,
             repository: crate_data.repository,
             documentation: crate_data.documentation,
-            license: crate_data.license,
+            license: None, // License is now only available on FullCrate, not Crate
             downloads: crate_data.downloads,
             recent_downloads: crate_data.recent_downloads,
             feature_flags: Vec::new(), // TODO: Extract from Cargo.toml
@@ -320,7 +320,6 @@ impl Fetcher {
         // TODO: Compare with expected checksum from API
         Ok(true)
     }
-
 }
 
 /// Download statistics for a crate

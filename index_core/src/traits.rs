@@ -144,7 +144,7 @@ impl TraitImplIndex {
             where_clause: self.extract_where_clause(&impl_item.generics),
             items: impl_item.items.clone(),
             is_blanket: impl_item.blanket_impl.is_some(),
-            is_synthetic: impl_item.synthetic,
+            is_synthetic: impl_item.is_synthetic,
             source_location: item.span.as_ref().map(|span| SourceLocation {
                 file: span.filename.to_string_lossy().to_string(),
                 line: span.begin.0 as u32,
@@ -334,14 +334,14 @@ impl TraitImplIndex {
     /// Convert type to string representation
     fn type_to_string(&self, ty: &Type) -> String {
         match ty {
-            Type::ResolvedPath(path) => path.name.clone(),
+            Type::ResolvedPath(path) => path.path.clone(),
             Type::DynTrait(dyn_trait) => {
                 format!(
                     "dyn {}",
                     dyn_trait
                         .traits
                         .first()
-                        .map(|t| t.trait_.name.clone())
+                        .map(|t| t.trait_.path.clone())
                         .unwrap_or_else(|| "Trait".to_string())
                 )
             }
@@ -356,21 +356,21 @@ impl TraitImplIndex {
             Type::Array { type_, len } => format!("[{}; {}]", self.type_to_string(type_), len),
             Type::ImplTrait(bounds) => format!("impl {}", bounds.len()),
             Type::Infer => "_".to_string(),
-            Type::RawPointer { mutable, type_ } => {
+            Type::RawPointer { is_mutable, type_ } => {
                 format!(
                     "*{} {}",
-                    if *mutable { "mut" } else { "const" },
+                    if *is_mutable { "mut" } else { "const" },
                     self.type_to_string(type_)
                 )
             }
             Type::BorrowedRef {
                 lifetime: _,
-                mutable,
+                is_mutable,
                 type_,
             } => {
                 format!(
-                    "&{}{}",
-                    if *mutable { "mut " } else { "" },
+                    "&{} {}",
+                    if *is_mutable { "mut " } else { "" },
                     self.type_to_string(type_)
                 )
             }
@@ -383,7 +383,7 @@ impl TraitImplIndex {
                 format!(
                     "<{} as {}>::{}",
                     self.type_to_string(self_type),
-                    trait_.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
+                    trait_.as_ref().map(|t| t.path.clone()).unwrap_or_default(),
                     name
                 )
             }
@@ -503,7 +503,7 @@ mod tests {
             kind: rustdoc_types::GenericParamDefKind::Type {
                 bounds: Vec::new(),
                 default: None,
-                synthetic: false,
+                is_synthetic: false,
             },
         });
 

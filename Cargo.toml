@@ -2,6 +2,9 @@
 members = ["mcp_server", "doc_engine", "index_core"]
 resolver = "2"
 
+[workspace.package]
+edition = "2021"
+
 [workspace.dependencies]
 # Core async runtime
 tokio = { version = "1.45.1", features = [
@@ -21,8 +24,6 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# HTTP client
-
 # Logging
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = [
@@ -32,7 +33,7 @@ tracing-subscriber = { version = "0.3.19", features = [
 ] }
 
 # MCP Framework
-rmcp = { version = "0.1.5", features = ["server", "transport-io"] }
+rmcp = { version = "0.2.0", features = ["server", "transport-io", "macros"] }
 
 # JSON Schema
 schemars = "0.8"
@@ -41,7 +42,7 @@ schemars = "0.8"
 crates_io_api = "0.8"
 
 # Rustdoc types
-rustdoc-types = "0.26"
+rustdoc-types = "0.54"
 
 # Search index
 tantivy = "0.21"
@@ -54,7 +55,11 @@ flate2 = "1.0"
 zstd = "0.13"
 
 # Date and time handling
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chrono = { version = "0.4", default-features = false, features = [
+    "clock",
+    "serde",
+    "std",
+] }
 
 # Hashing
 sha2 = "0.10"
