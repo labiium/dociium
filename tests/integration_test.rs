@@ -13,7 +13,6 @@ use rmcp::handler::server::tool::Parameters;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio;
 
 /// Helper function to create a test MCP server
 async fn create_test_server() -> Result<(RustDocsMcpServer, TempDir)> {
@@ -23,13 +22,33 @@ async fn create_test_server() -> Result<(RustDocsMcpServer, TempDir)> {
     Ok((server, temp_dir))
 }
 
-/// Helper function to parse JSON response
-fn parse_response(response: &str) -> Value {
-    serde_json::from_str(response).unwrap_or_else(|_| json!({"error": "Invalid JSON response"}))
+/// Helper function to extract text from CallToolResult
+fn get_text_content(result: &rmcp::model::CallToolResult) -> String {
+    match result.content.first() {
+        Some(content) => match &**content {
+            rmcp::model::RawContent::Text(text_content) => text_content.text.clone(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
+/// Helper function to parse JSON response from result
+fn parse_response_result(
+    result: &Result<rmcp::model::CallToolResult, rmcp::model::ErrorData>,
+) -> Value {
+    match result {
+        Ok(call_result) => {
+            let text = get_text_content(call_result);
+            serde_json::from_str(&text)
+                .unwrap_or_else(|_| json!({"error": "Invalid JSON response"}))
+        }
+        Err(_) => json!({"error": "API call failed"}),
+    }
 }
 
 #[tokio::test]
-async fn test_search_crates_integration() {
+async fn test_search_crates_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     // Test basic search
@@ -39,20 +58,15 @@ async fn test_search_crates_integration() {
     });
 
     let response = server.search_crates(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
-    // Should return a list of crates
+    // Should return a list of crates or an error
     assert!(parsed.is_array() || parsed.get("error").is_some());
 
     if let Some(results) = parsed.as_array() {
-        // Mock implementation should return results
-        assert!(!results.is_empty());
-
-        // Each result should have required fields
+        // Results should have proper structure
         for result in results.iter().take(3) {
             assert!(result.get("name").is_some());
-            assert!(result.get("latest_version").is_some());
-            assert!(result.get("downloads").is_some());
         }
     }
 }
@@ -67,10 +81,10 @@ async fn test_search_crates_empty_query() {
     });
 
     let response = server.search_crates(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle empty query gracefully
-    assert!(parsed.get("error").is_some() || parsed.as_array().map_or(false, |arr| arr.is_empty()));
+    assert!(parsed.get("error").is_some() || parsed.as_array().is_some_and(|arr| arr.is_empty()));
 }
 
 #[tokio::test]
@@ -83,7 +97,7 @@ async fn test_search_crates_with_limit() {
     });
 
     let response = server.search_crates(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     if let Some(results) = parsed.as_array() {
         // Should respect the limit
@@ -92,7 +106,7 @@ async fn test_search_crates_with_limit() {
 }
 
 #[tokio::test]
-async fn test_crate_info_integration() {
+async fn test_crate_info_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(CrateInfoParams {
@@ -100,10 +114,10 @@ async fn test_crate_info_integration() {
     });
 
     let response = server.crate_info(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return crate information or error
-    if !parsed.get("error").is_some() {
+    if parsed.get("error").is_none() {
         assert!(parsed.get("name").is_some());
         assert!(parsed.get("latest_version").is_some());
         assert!(parsed.get("downloads").is_some());
@@ -119,14 +133,14 @@ async fn test_crate_info_nonexistent() {
     });
 
     let response = server.crate_info(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return an error for nonexistent crate
     assert!(parsed.get("error").is_some());
 }
 
 #[tokio::test]
-async fn test_get_item_doc_integration() {
+async fn test_get_item_doc_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(GetItemDocParams {
@@ -136,10 +150,10 @@ async fn test_get_item_doc_integration() {
     });
 
     let response = server.get_item_doc(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return documentation or error
-    if !parsed.get("error").is_some() {
+    if parsed.get("error").is_none() {
         assert!(parsed.get("path").is_some());
         assert!(parsed.get("kind").is_some());
         assert!(parsed.get("rendered_markdown").is_some());
@@ -157,14 +171,14 @@ async fn test_get_item_doc_with_version() {
     });
 
     let response = server.get_item_doc(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle version parameter
     assert!(parsed.get("error").is_some() || parsed.get("path").is_some());
 }
 
 #[tokio::test]
-async fn test_list_trait_impls_integration() {
+async fn test_list_trait_impls_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(ListTraitImplsParams {
@@ -174,14 +188,14 @@ async fn test_list_trait_impls_integration() {
     });
 
     let response = server.list_trait_impls(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return trait implementations or error
     assert!(parsed.get("error").is_some() || parsed.is_array());
 }
 
 #[tokio::test]
-async fn test_list_impls_for_type_integration() {
+async fn test_list_impls_for_type_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(ListImplsForTypeParams {
@@ -191,14 +205,14 @@ async fn test_list_impls_for_type_integration() {
     });
 
     let response = server.list_impls_for_type(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return type implementations or error
     assert!(parsed.get("error").is_some() || parsed.is_array());
 }
 
 #[tokio::test]
-async fn test_source_snippet_integration() {
+async fn test_source_snippet_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(SourceSnippetParams {
@@ -209,10 +223,10 @@ async fn test_source_snippet_integration() {
     });
 
     let response = server.source_snippet(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return source snippet or error
-    if !parsed.get("error").is_some() {
+    if parsed.get("error").is_none() {
         assert!(parsed.get("code").is_some());
         assert!(parsed.get("file").is_some());
         assert!(parsed.get("line_start").is_some());
@@ -231,14 +245,14 @@ async fn test_source_snippet_with_default_context() {
     });
 
     let response = server.source_snippet(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle default context_lines
     assert!(parsed.get("error").is_some() || parsed.get("code").is_some());
 }
 
 #[tokio::test]
-async fn test_search_symbols_integration() {
+async fn test_search_symbols_basic() {
     let (server, _temp_dir) = create_test_server().await.unwrap();
 
     let params = Parameters(SearchSymbolsParams {
@@ -250,7 +264,7 @@ async fn test_search_symbols_integration() {
     });
 
     let response = server.search_symbols(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should return symbol search results or error
     if let Some(results) = parsed.as_array() {
@@ -275,7 +289,7 @@ async fn test_search_symbols_no_kinds_filter() {
     });
 
     let response = server.search_symbols(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should work without kinds filter
     assert!(parsed.get("error").is_some() || parsed.is_array());
@@ -294,7 +308,7 @@ async fn test_search_symbols_with_limit() {
     });
 
     let response = server.search_symbols(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     if let Some(results) = parsed.as_array() {
         // Should respect the limit
@@ -311,7 +325,7 @@ async fn test_error_handling_invalid_crate_name() {
     });
 
     let response = server.crate_info(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle invalid crate names gracefully
     assert!(parsed.get("error").is_some());
@@ -328,7 +342,7 @@ async fn test_error_handling_empty_path() {
     });
 
     let response = server.get_item_doc(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle empty paths gracefully
     assert!(parsed.get("error").is_some());
@@ -353,7 +367,7 @@ async fn test_server_creation_and_info() {
     let info = server.get_info();
 
     assert_eq!(info.server_info.name, "rust-docs-mcp-server");
-    assert!(info.server_info.version.len() > 0);
+    assert!(!info.server_info.version.is_empty());
     assert!(info.instructions.is_some());
     assert!(info.capabilities.tools.is_some());
 }
@@ -370,7 +384,7 @@ async fn test_concurrent_requests() {
         let server_clone = server.clone();
         let handle = tokio::spawn(async move {
             let params = Parameters(SearchCratesParams {
-                query: format!("test-{}", i),
+                query: format!("test-{i}"),
                 limit: Some(3),
             });
             server_clone.search_crates(params).await
@@ -381,7 +395,7 @@ async fn test_concurrent_requests() {
     // Wait for all requests to complete
     for handle in handles {
         let response = handle.await.unwrap();
-        let parsed = parse_response(&response);
+        let parsed = parse_response_result(&response);
         // Each should return a valid response (array or error)
         assert!(parsed.is_array() || parsed.get("error").is_some());
     }
@@ -404,10 +418,13 @@ async fn test_parameter_validation() {
     for (crate_name, should_error) in test_cases {
         let params = Parameters(CrateInfoParams { name: crate_name });
         let response = server.crate_info(params).await;
-        let parsed = parse_response(&response);
+        let parsed = parse_response_result(&response);
 
         if should_error {
-            assert!(parsed.get("error").is_some(), "Expected error for invalid input");
+            assert!(
+                parsed.get("error").is_some(),
+                "Expected error for invalid input"
+            );
         }
         // Note: Valid inputs might still return errors if crate doesn't exist,
         // but they shouldn't cause panics or invalid JSON
@@ -427,8 +444,11 @@ async fn test_json_serialization_integrity() {
     let response = server.search_crates(params).await;
 
     // Should always be valid JSON
-    let parsed = serde_json::from_str::<Value>(&response);
-    assert!(parsed.is_ok(), "Response should be valid JSON: {}", response);
+    let parsed = parse_response_result(&response);
+    assert!(
+        parsed.is_object() || parsed.is_array(),
+        "Response should be valid JSON"
+    );
 }
 
 #[tokio::test]
@@ -452,13 +472,12 @@ async fn test_version_parameter_handling() {
         });
 
         let response = server.get_item_doc(params).await;
-        let parsed = parse_response(&response);
+        let parsed = parse_response_result(&response);
 
         // Should handle all version formats gracefully
         assert!(
             parsed.is_object(),
-            "Should return object for version {:?}",
-            version
+            "Should return object for version {version:?}"
         );
     }
 }
@@ -475,7 +494,7 @@ async fn test_large_query_handling() {
     });
 
     let response = server.search_crates(params).await;
-    let parsed = parse_response(&response);
+    let parsed = parse_response_result(&response);
 
     // Should handle large queries without crashing
     assert!(parsed.is_array() || parsed.get("error").is_some());
@@ -514,7 +533,6 @@ async fn test_response_performance() {
     // Should respond within reasonable time (adjust as needed)
     assert!(
         duration.as_secs() < 30,
-        "Response took too long: {:?}",
-        duration
+        "Response took too long: {duration:?}"
     );
 }

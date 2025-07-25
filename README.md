@@ -4,6 +4,44 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 
 **✅ WORKING: Now uses intelligent docs.rs URL discovery for secure, fast documentation access!**
 
+## 📦 Installation
+
+### Quick Install
+
+```bash
+# Clone and install from source
+git clone https://github.com/example/dociium.git
+cd dociium
+cargo install --path .
+```
+
+### Alternative Methods
+
+```bash
+# Install from workspace member
+cargo install --path mcp_server
+
+# From crates.io (coming soon)
+cargo install dociium
+```
+
+### Usage
+
+Configure your MCP client:
+
+```json
+{
+  "servers": {
+    "dociium": {
+      "command": "dociium",
+      "args": []
+    }
+  }
+}
+```
+
+**Performance**: First request ~1s, cached requests <1ms. See [INSTALL.md](INSTALL.md) for detailed installation guide.
+
 ## 🚀 Features
 
 ### Core Functionality

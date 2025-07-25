@@ -210,7 +210,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!("Timeout searching crates with query: {}", query),
+                format!("Timeout searching crates with query: {query}"),
                 None,
             )
         })?
@@ -276,7 +276,7 @@ impl RustDocsMcpServer {
         .map_err(|_| {
             tracing::warn!("Timeout in get_item_doc for {}::{}", crate_name, path);
             ErrorData::internal_error(
-                format!("Timeout getting documentation for {}::{}", crate_name, path),
+                format!("Timeout getting documentation for {crate_name}::{path}"),
                 None,
             )
         })?
@@ -315,10 +315,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!(
-                    "Timeout listing trait implementations for {}::{}",
-                    crate_name, trait_path
-                ),
+                format!("Timeout listing trait implementations for {crate_name}::{trait_path}"),
                 None,
             )
         })?
@@ -356,10 +353,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!(
-                    "Timeout listing type implementations for {}::{}",
-                    crate_name, type_path
-                ),
+                format!("Timeout listing type implementations for {crate_name}::{type_path}"),
                 None,
             )
         })?
@@ -401,10 +395,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!(
-                    "Timeout getting source snippet for {}::{}",
-                    crate_name, item_path
-                ),
+                format!("Timeout getting source snippet for {crate_name}::{item_path}"),
                 None,
             )
         })?
@@ -458,10 +449,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!(
-                    "Timeout getting implementation context for {} in {}",
-                    item_path, package_name
-                ),
+                format!("Timeout getting implementation context for {item_path} in {package_name}"),
                 None,
             )
         })?
@@ -528,10 +516,7 @@ impl RustDocsMcpServer {
         .await
         .map_err(|_| {
             ErrorData::internal_error(
-                format!(
-                    "Timeout searching symbols in {} for query: {}",
-                    crate_name, query
-                ),
+                format!("Timeout searching symbols in {crate_name} for query: {query}"),
                 None,
             )
         })?

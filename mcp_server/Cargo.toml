@@ -13,17 +13,6 @@ path = "src/lib.rs"
 name = "dociium"
 path = "src/main.rs"
 
-[[bin]]
-name = "debug_tokio_mutex"
-path = "../debug_tokio_mutex.rs"
-
-[[bin]]
-name = "test_mcp_direct"
-path = "../test_mcp_direct.rs"
-
-[[bin]]
-name = "quick_latency_test"
-path = "../quick_latency_test.rs"
 
 [dependencies]
 # Workspace dependencies

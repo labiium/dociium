@@ -623,6 +623,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dociium"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crates_io_api",
+ "doc_engine",
+ "index_core",
+ "mcp_server",
+ "reqwest 0.12.20",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dtoa"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
