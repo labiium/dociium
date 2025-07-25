@@ -203,13 +203,18 @@ impl RustDocsMcpServer {
             ));
         }
 
-        let results = self
-            .engine
-            .search_crates(&query, limit.unwrap_or(10))
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to search crates: {e}"), None)
-            })?;
+        let results = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            self.engine.search_crates(&query, limit.unwrap_or(10)),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!("Timeout searching crates with query: {}", query),
+                None,
+            )
+        })?
+        .map_err(|e| ErrorData::internal_error(format!("Failed to search crates: {e}"), None))?;
 
         let json_content = serde_json::to_string(&results)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -254,13 +259,31 @@ impl RustDocsMcpServer {
         validate_crate_name(&crate_name)?;
         validate_item_path(&path)?;
 
-        let doc = self
-            .engine
-            .get_item_doc(&crate_name, &path, version.as_deref())
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to get item documentation: {e}"), None)
-            })?;
+        tracing::info!(
+            "MCP get_item_doc: crate={}, path={}, version={:?}",
+            crate_name,
+            path,
+            version
+        );
+
+        // Add timeout to the entire operation
+        let doc = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.engine
+                .get_item_doc(&crate_name, &path, version.as_deref()),
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!("Timeout in get_item_doc for {}::{}", crate_name, path);
+            ErrorData::internal_error(
+                format!("Timeout getting documentation for {}::{}", crate_name, path),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            tracing::error!("Error in get_item_doc for {}::{}: {}", crate_name, path, e);
+            ErrorData::internal_error(format!("Failed to get item documentation: {e}"), None)
+        })?;
 
         let json_content = serde_json::to_string(&doc)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -284,16 +307,24 @@ impl RustDocsMcpServer {
         validate_crate_name(&crate_name)?;
         validate_item_path(&trait_path)?;
 
-        let impls = self
-            .engine
-            .list_trait_impls(&crate_name, &trait_path, version.as_deref())
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(
-                    format!("Failed to list trait implementations: {e}"),
-                    None,
-                )
-            })?;
+        let impls = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.engine
+                .list_trait_impls(&crate_name, &trait_path, version.as_deref()),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout listing trait implementations for {}::{}",
+                    crate_name, trait_path
+                ),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            ErrorData::internal_error(format!("Failed to list trait implementations: {e}"), None)
+        })?;
 
         let json_content = serde_json::to_string(&impls)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -317,13 +348,24 @@ impl RustDocsMcpServer {
         validate_crate_name(&crate_name)?;
         validate_item_path(&type_path)?;
 
-        let impls = self
-            .engine
-            .list_impls_for_type(&crate_name, &type_path, version.as_deref())
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to list type implementations: {e}"), None)
-            })?;
+        let impls = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.engine
+                .list_impls_for_type(&crate_name, &type_path, version.as_deref()),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout listing type implementations for {}::{}",
+                    crate_name, type_path
+                ),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            ErrorData::internal_error(format!("Failed to list type implementations: {e}"), None)
+        })?;
 
         let json_content = serde_json::to_string(&impls)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -348,22 +390,27 @@ impl RustDocsMcpServer {
         validate_crate_name(&crate_name)?;
         validate_item_path(&item_path)?;
 
-        // Validate context_lines
+        // Default context lines if not provided
         let context = context_lines.unwrap_or(5);
-        if context > 100 {
-            return Err(ErrorData::invalid_params(
-                "Context lines too large (max 100)",
-                None,
-            ));
-        }
 
-        let snippet = self
-            .engine
-            .source_snippet(&crate_name, &item_path, context, version.as_deref())
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to get source snippet: {e}"), None)
-            })?;
+        let snippet = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.engine
+                .source_snippet(&crate_name, &item_path, context, version.as_deref()),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout getting source snippet for {}::{}",
+                    crate_name, item_path
+                ),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            ErrorData::internal_error(format!("Failed to get source snippet: {e}"), None)
+        })?;
 
         let json_content = serde_json::to_string(&snippet)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -399,21 +446,28 @@ impl RustDocsMcpServer {
             ));
         }
 
-        let context = self
-            .engine
-            .get_implementation_context(
+        let context = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            self.engine.get_implementation_context(
                 &language,
                 &package_name,
                 &item_path,
                 context_path.as_deref(),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout getting implementation context for {} in {}",
+                    item_path, package_name
+                ),
+                None,
             )
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(
-                    format!("Failed to get implementation context: {e}"),
-                    None,
-                )
-            })?;
+        })?
+        .map_err(|e| {
+            ErrorData::internal_error(format!("Failed to get implementation context: {e}"), None)
+        })?;
 
         let json_content = serde_json::to_string(&context)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -461,19 +515,27 @@ impl RustDocsMcpServer {
             ));
         }
 
-        let results = self
-            .engine
-            .search_symbols(
+        let results = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.engine.search_symbols(
                 &crate_name,
                 &query,
                 kinds.as_deref(),
                 search_limit,
                 version.as_deref(),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout searching symbols in {} for query: {}",
+                    crate_name, query
+                ),
+                None,
             )
-            .await
-            .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to search symbols: {e}"), None)
-            })?;
+        })?
+        .map_err(|e| ErrorData::internal_error(format!("Failed to search symbols: {e}"), None))?;
 
         let json_content = serde_json::to_string(&results)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -487,9 +549,13 @@ impl RustDocsMcpServer {
         &self,
         _params: Parameters<CacheStatsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let stats = self.engine.get_cache_stats().await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get cache stats: {e}"), None)
-        })?;
+        let stats = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            self.engine.get_cache_stats(),
+        )
+        .await
+        .map_err(|_| ErrorData::internal_error("Timeout getting cache stats".to_string(), None))?
+        .map_err(|e| ErrorData::internal_error(format!("Failed to get cache stats: {e}"), None))?;
 
         let json_content = serde_json::to_string(&stats)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
@@ -531,9 +597,13 @@ impl RustDocsMcpServer {
         &self,
         _params: Parameters<CacheStatsParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = self.engine.cleanup_expired_cache().await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to cleanup cache: {e}"), None)
-        })?;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.engine.cleanup_expired_cache(),
+        )
+        .await
+        .map_err(|_| ErrorData::internal_error("Timeout cleaning up cache".to_string(), None))?
+        .map_err(|e| ErrorData::internal_error(format!("Failed to cleanup cache: {e}"), None))?;
 
         let json_content = serde_json::to_string(&result)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;

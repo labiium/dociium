@@ -43,12 +43,12 @@ impl Fetcher {
     pub fn new() -> Self {
         let client = AsyncClient::new(
             "rdocs-mcp (https://github.com/example/rdocs-mcp)",
-            Duration::from_secs(30),
+            Duration::from_secs(10), // Reduced from 30s to 10s
         )
         .expect("Failed to create crates.io client");
 
         let http_client = Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(30)) // Reduced from 120s to 30s
             .gzip(true)
             .build()
             .expect("Failed to create HTTP client");
@@ -113,10 +113,9 @@ impl Fetcher {
 
         debug!("Fetching crate info for: {}", name);
 
-        let response = self
-            .client
-            .get_crate(name)
+        let response = tokio::time::timeout(Duration::from_secs(15), self.client.get_crate(name))
             .await
+            .context("Timeout getting crate info")?
             .with_context(|| format!("Failed to get crate info for: {name}"))?;
 
         let crate_data = response.crate_data;
@@ -140,14 +139,15 @@ impl Fetcher {
             ver_b.cmp(&ver_a)
         });
 
-        // Get dependencies for the latest version
+        // Get dependencies for the latest version with timeout
         let mut dependencies = Vec::new();
         if let Some(latest_version) = versions.first() {
             self.rate_limiter.until_ready().await;
-            if let Ok(deps) = self
-                .client
-                .crate_dependencies(name, &latest_version.num)
-                .await
+            if let Ok(Ok(deps)) = tokio::time::timeout(
+                Duration::from_secs(10),
+                self.client.crate_dependencies(name, &latest_version.num),
+            )
+            .await
             {
                 for dep in deps {
                     dependencies.push(DependencyInfo {
@@ -241,17 +241,52 @@ impl Fetcher {
         Ok(temp_dir)
     }
 
-    /// Get the latest stable version of a crate
+    /// Get the latest stable version of a crate (fast - no dependencies)
     #[instrument(skip(self), fields(name = %name))]
     pub async fn get_latest_version(&self, name: &str) -> Result<Version> {
         debug!("Getting latest version for: {}", name);
 
-        let crate_info = self.crate_info(name).await?;
-        let version = Version::parse(&crate_info.latest_version)
-            .with_context(|| format!("Invalid version format: {}", crate_info.latest_version))?;
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        debug!("Fetching basic crate info for: {}", name);
+
+        let response = tokio::time::timeout(Duration::from_secs(10), self.client.get_crate(name))
+            .await
+            .context("Timeout getting latest version")?
+            .with_context(|| format!("Failed to get crate info for: {name}"))?;
+
+        let version = Version::parse(&response.crate_data.max_version).with_context(|| {
+            format!(
+                "Invalid version format: {}",
+                response.crate_data.max_version
+            )
+        })?;
 
         debug!("Latest version for {}: {}", name, version);
         Ok(version)
+    }
+
+    /// Get the latest version as a string (even faster - no semver parsing)
+    #[instrument(skip(self), fields(name = %name))]
+    pub async fn get_latest_version_string(&self, name: &str) -> Result<String> {
+        debug!("Getting latest version string for: {}", name);
+
+        // Wait for rate limit
+        self.rate_limiter.until_ready().await;
+
+        debug!("Fetching basic crate info for: {}", name);
+
+        let response = tokio::time::timeout(Duration::from_secs(10), self.client.get_crate(name))
+            .await
+            .context("Timeout getting latest version string")?
+            .with_context(|| format!("Failed to get crate info for: {name}"))?;
+
+        debug!(
+            "Latest version for {}: {}",
+            name, response.crate_data.max_version
+        );
+        Ok(response.crate_data.max_version)
     }
 
     /// Check if a crate exists
@@ -262,18 +297,22 @@ impl Fetcher {
         // Wait for rate limit
         self.rate_limiter.until_ready().await;
 
-        match self.client.get_crate(name).await {
-            Ok(_) => {
+        match tokio::time::timeout(Duration::from_secs(10), self.client.get_crate(name)).await {
+            Ok(Ok(_)) => {
                 debug!("Crate exists: {}", name);
                 Ok(true)
             }
-            Err(crates_io_api::Error::NotFound(_)) => {
+            Ok(Err(crates_io_api::Error::NotFound(_))) => {
                 debug!("Crate does not exist: {}", name);
                 Ok(false)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("Error checking crate existence for {}: {}", name, e);
                 Err(e.into())
+            }
+            Err(_) => {
+                warn!("Timeout checking crate existence for {}", name);
+                Err(anyhow::anyhow!("Timeout checking crate existence"))
             }
         }
     }

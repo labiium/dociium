@@ -2,7 +2,7 @@
 
 A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to documentation and source code for multiple languages, including **Rust**, **Python**, and **Node.js (JavaScript/TypeScript)**. Built in Rust for maximum performance and reliability.
 
-**🔄 NEW: Now uses docs.rs scraping for enhanced security and faster documentation access!**
+**✅ WORKING: Now uses intelligent docs.rs URL discovery for secure, fast documentation access!**
 
 ## 🚀 Features
 
@@ -72,9 +72,21 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
     "name": "get_item_doc",
     "arguments": {
       "crate_name": "tokio",
-      "path": "sync::mpsc::channel"
+      "path": "tokio::sync::Mutex"
     }
   }
+}
+```
+
+**Response:**
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\"path\":\"tokio::sync::Mutex\",\"kind\":\"struct\",\"rendered_markdown\":\"<div class=\\\"docblock\\\">An async mutex...</div>\",\"signature\":\"pub struct Mutex<T: ?Sized> { /* private fields */ }\",\"visibility\":\"public\"}"
+    }
+  ]
 }
 ```
 
@@ -97,9 +109,9 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
  │
  └─ DocEngine (doc_engine crate)
     ├─ Package Finder: Locates packages in local environments (pip, npm)
-    ├─ Docs.rs Scraper: Fetches pre-built documentation from docs.rs
+    ├─ Docs.rs Scraper: Intelligent URL discovery and HTML parsing
     ├─ Language Processors
-    │  ├─ Rust (scrapes docs.rs)
+    │  ├─ Rust (scrapes docs.rs with auto URL discovery)
     │  ├─ Python (uses tree-sitter)
     │  └─ Node.js (uses tree-sitter)
     ├─ Smart Cache: Item-level caching with TTL
@@ -217,12 +229,13 @@ The server will listen on `127.0.0.1:8800` for WebSocket connections.
 ## 🚀 Performance
 
 ### Benchmarks
-- **Cold Start**: ~500ms for popular crates (docs.rs fetching)
+- **Cold Start**: ~500ms for popular crates (docs.rs fetching with URL discovery)
 - **Warm Cache**: <50ms for cached queries
 - **Memory Usage**: ~30MB base + ~5MB per cached crate
 - **No Build Time**: Documentation pre-built on docs.rs
 
 ### Optimizations
+- **Intelligent URL Discovery**: Automatically finds correct docs.rs URLs for any item type
 - **On-demand Fetching**: Only fetch documentation when requested
 - **Compressed Storage**: Efficient cache compression with zstd
 - **Smart Indexing**: Uses docs.rs search-index.js for symbol search
@@ -274,7 +287,7 @@ rdocs_mcp/
 - **No Code Execution**: Eliminates RCE vulnerabilities by using pre-built docs
 - **Rate Limiting**: Prevents abuse with configurable limits
 - **Input Validation**: Comprehensive validation of all inputs
-- **Network Security**: Only fetches from trusted docs.rs domain
+- **Network Security**: Only fetches from trusted docs.rs domain with URL validation
 - **Cache Isolation**: Per-crate cache isolation
 
 ## 🐛 Troubleshooting
@@ -284,10 +297,12 @@ rdocs_mcp/
 **"Documentation not found"**
 - Ensure the crate has documentation published on docs.rs
 - Try a different version or use "latest"
+- Check that the item path is correct (e.g., "tokio::sync::Mutex" not "tokio::Mutex")
 
 **"Network timeout"**
 - Check internet connectivity
 - docs.rs may be temporarily unavailable
+- The URL discovery process tries multiple patterns and may take longer for complex items
 
 **"Cache permission errors"**
 - Ensure write permissions to cache directory
@@ -346,15 +361,16 @@ Cache management is integrated into the MCP server tools:
 ### Phase 1 (Current)
 - ✅ Basic MCP server with stdio transport
 - ✅ Core documentation tools
-- ✅ Docs.rs scraping architecture
+- ✅ Docs.rs scraping with intelligent URL discovery
 - ✅ Item-level caching with compression
 - ✅ Integrated cache management via MCP tools
+- ✅ Working implementation for tokio::sync::Mutex and similar items
 
 ### Phase 2 (Next)
-- 🔄 Enhanced trait implementation detection
-- 🔄 Source code viewing from docs.rs
+- 🔄 Enhanced trait implementation detection from HTML parsing
+- 🔄 Source code viewing from docs.rs source links
 - 🔄 WebSocket transport
-- 🔄 Performance monitoring
+- 🔄 Performance monitoring and URL discovery optimization
 
 ### Phase 3 (Future)
 - 📋 Cross-crate dependency analysis

@@ -1599,8 +1599,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "crates_io_api",
  "doc_engine",
  "index_core",
+ "reqwest 0.12.20",
  "rmcp",
  "schemars",
  "serde",

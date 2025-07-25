@@ -11,10 +11,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
-use tokio::fs;
-use tracing::info;
+use tokio::{fs, sync::Mutex};
+use tracing::{info, warn};
 
 use crate::processors::traits::{ImplementationContext, LanguageProcessor};
 
@@ -45,6 +45,7 @@ pub struct DocEngine {
     cache: Arc<cache::Cache>,
     index: Arc<IndexCore>,
     memory_cache: Arc<Mutex<LruCache<String, Arc<CrateDocumentation>>>>,
+    version_cache: Arc<Mutex<LruCache<String, String>>>,
     python_processor: Arc<processors::python::PythonProcessor>,
     node_processor: Arc<processors::node::NodeProcessor>,
 }
@@ -61,6 +62,7 @@ impl DocEngine {
         let cache = Arc::new(cache::Cache::new(cache_dir)?);
         let index = Arc::new(IndexCore::new(cache_dir.join("index"))?);
         let memory_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())));
+        let version_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
         let python_processor = Arc::new(processors::python::PythonProcessor);
         let node_processor = Arc::new(processors::node::NodeProcessor);
 
@@ -69,6 +71,7 @@ impl DocEngine {
             cache,
             index,
             memory_cache,
+            version_cache,
             python_processor,
             node_processor,
         })
@@ -95,19 +98,96 @@ impl DocEngine {
         let version_str = if let Some(v) = version {
             v.to_string()
         } else {
-            let crate_info = self.fetcher.crate_info(crate_name).await?;
-            crate_info.latest_version
+            // Check version cache first
+            let cached_version = {
+                let mut cache = self.version_cache.lock().await;
+                cache.get(crate_name).cloned()
+            };
+
+            if let Some(cached_version) = cached_version {
+                info!(
+                    "Using cached version for {}: {}",
+                    crate_name, cached_version
+                );
+                cached_version
+            } else {
+                info!("Fetching latest version for crate: {}", crate_name);
+                let version = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    self.fetcher.get_latest_version_string(crate_name),
+                )
+                .await
+                .context("Timeout getting latest version")?
+                .context("Failed to get latest version")?;
+
+                info!("Got latest version for {}: {}", crate_name, version);
+
+                // Cache the version for future use with separate scope
+                {
+                    let mut cache = self.version_cache.lock().await;
+                    cache.put(crate_name.to_string(), version.clone());
+                }
+                info!("Cached version {} for {}", version, crate_name);
+                version
+            }
         };
 
+        info!(
+            "Checkpoint 1: Got version {} for {}",
+            version_str, crate_name
+        );
+
+        info!(
+            "Checkpoint 2: About to check cache for {}::{}",
+            crate_name, path
+        );
+
         if let Some(cached_item) = self.cache.get_item_doc(crate_name, &version_str, path)? {
+            info!("Found cached item doc for {}::{}", crate_name, path);
             return Ok(cached_item);
         }
 
-        // Fetch from docs.rs using scraper
+        info!(
+            "Checkpoint 3: Starting to fetch docs for {}@{}: {}",
+            crate_name, version_str, path
+        );
+        // Fetch from docs.rs using scraper with timeout
         let scraper = scraper::DocsRsScraper::new();
-        let item_doc = scraper
-            .fetch_item_doc(crate_name, &version_str, path)
-            .await?;
+
+        info!("Starting scraper.fetch_item_doc...");
+        let scraper_start = std::time::Instant::now();
+
+        let item_doc = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            scraper.fetch_item_doc(crate_name, &version_str, path),
+        )
+        .await
+        .map_err(|_| {
+            warn!(
+                "Scraper timeout after {:?} for {}::{}",
+                scraper_start.elapsed(),
+                crate_name,
+                path
+            );
+            anyhow::anyhow!("Timeout fetching item documentation")
+        })?
+        .map_err(|e| {
+            warn!(
+                "Scraper error after {:?} for {}::{}: {}",
+                scraper_start.elapsed(),
+                crate_name,
+                path,
+                e
+            );
+            anyhow::anyhow!("Failed to fetch item documentation: {}", e)
+        })?;
+
+        info!(
+            "Successfully fetched docs for {}::{} in {:?}",
+            crate_name,
+            path,
+            scraper_start.elapsed()
+        );
 
         // Cache the result
         self.cache
@@ -225,7 +305,7 @@ impl DocEngine {
 
         // Check memory cache first
         {
-            let mut cache = self.memory_cache.lock().unwrap();
+            let mut cache = self.memory_cache.lock().await;
             if let Some(docs) = cache.get(&cache_key) {
                 return Ok(Arc::clone(docs));
             }
@@ -248,7 +328,7 @@ impl DocEngine {
 
             // Update memory cache
             {
-                let mut cache = self.memory_cache.lock().unwrap();
+                let mut cache = self.memory_cache.lock().await;
                 cache.put(cache_key, Arc::clone(&docs));
             }
 
@@ -273,7 +353,7 @@ impl DocEngine {
 
         // Update memory cache
         {
-            let mut cache = self.memory_cache.lock().unwrap();
+            let mut cache = self.memory_cache.lock().await;
             cache.put(cache_key, Arc::clone(&docs));
         }
 

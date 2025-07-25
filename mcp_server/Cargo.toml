@@ -13,6 +13,18 @@ path = "src/lib.rs"
 name = "dociium"
 path = "src/main.rs"
 
+[[bin]]
+name = "debug_tokio_mutex"
+path = "../debug_tokio_mutex.rs"
+
+[[bin]]
+name = "test_mcp_direct"
+path = "../test_mcp_direct.rs"
+
+[[bin]]
+name = "quick_latency_test"
+path = "../quick_latency_test.rs"
+
 [dependencies]
 # Workspace dependencies
 anyhow = { workspace = true }
@@ -23,6 +35,9 @@ rmcp = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
+crates_io_api = { workspace = true }
+tempfile = { workspace = true }
+reqwest = { workspace = true }
 
 # Local crates
 doc_engine = { path = "../doc_engine" }
