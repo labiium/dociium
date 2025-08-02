@@ -1,8 +1,12 @@
 //! Cache module for storing and retrieving crate documentation
 
 use anyhow::{Context, Result};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::io::{Read, Write};
 use std::{
     collections::HashMap,
     fs,
@@ -11,7 +15,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tracing::{debug, info};
-use zstd::stream::{Decoder, Encoder};
 
 use super::CrateDocumentation;
 use crate::doc_engine::types::{
@@ -366,19 +369,19 @@ impl Cache {
         Ok(removed_count)
     }
 
-    /// Compress data using zstd
+    /// Compress data using gzip
     fn _compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut encoder = Encoder::new(Vec::new(), 3)?;
-        std::io::copy(&mut std::io::Cursor::new(data), &mut encoder)?;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data)?;
         let compressed = encoder.finish()?;
         Ok(compressed)
     }
 
-    /// Decompress zstd-compressed data
+    /// Decompress gzip-compressed data
     fn _decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
-        let mut decoder = Decoder::new(data)?;
+        let mut decoder = GzDecoder::new(data);
         let mut out = Vec::new();
-        std::io::copy(&mut decoder, &mut out)?;
+        decoder.read_to_end(&mut out)?;
         Ok(out)
     }
 

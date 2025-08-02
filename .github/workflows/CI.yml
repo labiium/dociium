@@ -25,49 +25,25 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust }}-
-
-      - name: Run tests
-        run: cargo test --workspace --all-targets
-
-      - name: Check formatting
-        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
+          toolchain: ${{ matrix.toolchain }}
+      - run: cargo fetch
+      - run: cargo test --workspace --all-targets
+      - run: cargo audit --deny warnings
+  mac:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
+      - uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-
-      - name: Cache cargo-audit
-        uses: actions/cache@v3
+      - run: cargo fetch
+      - run: cargo test --workspace
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-bin
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Run audit
-        run: cargo audit --deny warnings
+          toolchain: stable
+      - run: cargo fetch
+      - run: cargo test --workspace

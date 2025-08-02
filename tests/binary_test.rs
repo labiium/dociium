@@ -175,12 +175,9 @@ fn test_dependencies_available() {
 
             // Check for key dependencies
             assert!(tree.contains("rmcp"), "Should have rmcp dependency");
-            assert!(
-                tree.contains("doc_engine"),
-                "Should have doc_engine dependency"
-            );
             assert!(tree.contains("tokio"), "Should have tokio dependency");
             assert!(tree.contains("serde"), "Should have serde dependency");
+            assert!(tree.contains("flate2"), "Should have flate2 dependency");
         }
     }
 }
@@ -202,13 +199,8 @@ fn test_release_build_size() {
     );
 
     // The binary should exist after building
-    let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
-    let binary_path = workspace_root
-        .join("target")
-        .join("release")
-        .join("dociium");
+    let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let binary_path = project_root.join("target").join("release").join("dociium");
 
     assert!(
         binary_path.exists(),
