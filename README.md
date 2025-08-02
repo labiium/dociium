@@ -9,6 +9,10 @@ Get instant access to documentation and source code from your AI assistant. Work
 ### Install
 
 ```bash
+# From crates.io (recommended)
+cargo install dociium
+
+# Or from source
 git clone https://github.com/labiium/dociium.git
 cd dociium
 cargo install --path .
