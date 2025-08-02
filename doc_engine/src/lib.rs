@@ -21,6 +21,7 @@ use crate::processors::traits::{ImplementationContext, LanguageProcessor};
 pub mod cache;
 pub mod fetcher;
 pub mod finder;
+pub mod local;
 pub mod processors;
 pub mod scraper;
 pub mod types;
@@ -151,30 +152,28 @@ impl DocEngine {
             "Checkpoint 3: Starting to fetch docs for {}@{}: {}",
             crate_name, version_str, path
         );
-        // Fetch from docs.rs using scraper with timeout
-        let scraper = scraper::DocsRsScraper::new();
 
-        info!("Starting scraper.fetch_item_doc...");
-        let scraper_start = std::time::Instant::now();
+        // Fetch documentation from locally downloaded source files
+        let crate_name_owned = crate_name.to_string();
+        let path_owned = path.to_string();
+        let version_owned = version_str.clone();
 
-        let item_doc = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            scraper.fetch_item_doc(crate_name, &version_str, path),
-        )
+        let fetch_start = std::time::Instant::now();
+        let item_doc = tokio::task::spawn_blocking(move || {
+            local::fetch_local_item_doc(&crate_name_owned, &version_owned, &path_owned)
+        })
         .await
-        .map_err(|_| {
+        .map_err(|e| {
             warn!(
-                "Scraper timeout after {:?} for {}::{}",
-                scraper_start.elapsed(),
-                crate_name,
-                path
+                "Join error while fetching docs for {}::{}: {}",
+                crate_name, path, e
             );
-            anyhow::anyhow!("Timeout fetching item documentation")
+            anyhow::anyhow!("Failed to join blocking task")
         })?
         .map_err(|e| {
             warn!(
-                "Scraper error after {:?} for {}::{}: {}",
-                scraper_start.elapsed(),
+                "Local doc fetch error after {:?} for {}::{}: {}",
+                fetch_start.elapsed(),
                 crate_name,
                 path,
                 e
@@ -186,7 +185,7 @@ impl DocEngine {
             "Successfully fetched docs for {}::{} in {:?}",
             crate_name,
             path,
-            scraper_start.elapsed()
+            fetch_start.elapsed()
         );
 
         // Cache the result
@@ -573,6 +572,8 @@ impl CrateDocumentation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -619,5 +620,60 @@ mod tests {
         let docs = docs.unwrap();
         assert_eq!(docs.crate_name, "test_crate");
         assert_eq!(docs.version, "1.0.0");
+    }
+
+    struct CargoHomeGuard(Option<String>);
+    impl CargoHomeGuard {
+        fn set(path: &Path) -> Self {
+            let old = std::env::var("CARGO_HOME").ok();
+            std::env::set_var("CARGO_HOME", path);
+            CargoHomeGuard(old)
+        }
+    }
+    impl Drop for CargoHomeGuard {
+        fn drop(&mut self) {
+            if let Some(ref old) = self.0 {
+                std::env::set_var("CARGO_HOME", old);
+            } else {
+                std::env::remove_var("CARGO_HOME");
+            }
+        }
+    }
+
+    fn setup_crate() -> (tempfile::TempDir, CargoHomeGuard) {
+        let temp = tempdir().unwrap();
+        let guard = CargoHomeGuard::set(temp.path());
+        let crate_dir = temp
+            .path()
+            .join("registry")
+            .join("src")
+            .join("test-reg")
+            .join("mycrate-0.1.0");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(
+            crate_dir.join("src/lib.rs"),
+            concat!(
+                "/// Example struct\n",
+                "pub struct MyStruct;\n\n",
+                "/// Example function\n",
+                "pub fn my_fn() {}\n",
+            ),
+        )
+        .unwrap();
+        (temp, guard)
+    }
+
+    #[tokio::test]
+    async fn get_item_doc_from_local_sources() {
+        let (dir, _guard) = setup_crate();
+        let cache_dir = tempdir().unwrap();
+        let engine = DocEngine::new(cache_dir.path()).await.unwrap();
+        let doc = engine
+            .get_item_doc("mycrate", "mycrate::MyStruct", Some("0.1.0"))
+            .await
+            .unwrap();
+        assert_eq!(doc.kind, "struct");
+        assert_eq!(doc.rendered_markdown, "Example struct");
+        assert!(dir.path().join("registry").exists());
     }
 }
