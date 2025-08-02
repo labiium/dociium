@@ -1,6 +1,7 @@
 [workspace]
 members = ["mcp_server", "doc_engine", "index_core"]
 resolver = "2"
+default-members = ["mcp_server"]
 
 [workspace.package]
 version = "0.1.0"

@@ -32,7 +32,7 @@ cd dociium
 cargo install --path mcp_server
 
 # From git directly
-cargo install --git https://github.com/labiium/dociium.git --bin dociium
+cargo install --git https://github.com/labiium/dociium.git dociium
 ```
 
 ### Basic Usage
