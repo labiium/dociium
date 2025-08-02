@@ -5,35 +5,69 @@ on:
     branches: ["master", "main"]
   pull_request: {}
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        toolchain: [stable, nightly]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable]
+        include:
+          - os: ubuntu-latest
+            rust: nightly
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: ${{ matrix.toolchain }}
-      - run: cargo fetch
-      - run: cargo test --workspace --all-targets
-      - run: cargo audit --deny warnings
-  mac:
-    runs-on: macos-latest
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+      - name: Check formatting
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: stable
-      - run: cargo fetch
-      - run: cargo test --workspace
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
+
+      - name: Cache cargo-audit
+        uses: actions/cache@v3
         with:
-          toolchain: stable
-      - run: cargo fetch
-      - run: cargo test --workspace
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-bin
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run audit
+        run: cargo audit --deny warnings
