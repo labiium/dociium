@@ -1,9 +1,10 @@
 [package]
 name = "mcp_server"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "MCP server for Rust documentation queries"
-license = "MIT OR Apache-2.0"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "mcp_server"

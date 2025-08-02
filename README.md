@@ -1,37 +1,39 @@
-# DOCIIUM: Multi-Language Documentation & Code MCP Server
+# DOCIIUM
 
-A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to documentation and source code for multiple languages, including **Rust**, **Python**, and **Node.js (JavaScript/TypeScript)**. Built in Rust for maximum performance and reliability.
+A high-performance **Model Context Protocol (MCP)** server that provides comprehensive access to documentation and source code for multiple programming languages, including **Rust**, **Python**, and **Node.js**. Built in Rust for maximum performance and reliability.
 
-**✅ WORKING: Now uses intelligent docs.rs URL discovery for secure, fast documentation access!**
+[![CI](https://github.com/labiium/dociium/workflows/CI/badge.svg)](https://github.com/labiium/dociium/actions)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/dociium.svg)](https://crates.io/crates/dociium)
 
-## 📦 Installation
+## ✨ Features
 
-### Quick Install
+- **🦀 Rust Documentation**: Fast access to docs.rs with intelligent URL discovery
+- **🐍 Python Integration**: Local package analysis via tree-sitter parsing
+- **📦 Node.js Support**: JavaScript/TypeScript package exploration
+- **⚡ High Performance**: Sub-millisecond cached responses, ~1s cold starts
+- **🧠 Smart Caching**: Multi-level caching with compression and TTL
+- **🔍 Symbol Search**: Full-text search across crate symbols and documentation
+- **🎯 MCP Protocol**: Native Model Context Protocol server implementation
+
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
-# Clone and install from source
-git clone https://github.com/example/dociium.git
+# Install from source
+git clone https://github.com/labiium/dociium.git
 cd dociium
-cargo install --path .
-```
-
-### Alternative Methods
-
-```bash
-# Install from workspace member
 cargo install --path mcp_server
-
-# From crates.io (coming soon)
-cargo install dociium
 ```
 
-### Usage
+### Basic Usage
 
-Configure your MCP client:
+Configure your MCP client (Claude Desktop, etc.):
 
 ```json
 {
-  "servers": {
+  "mcpServers": {
     "dociium": {
       "command": "dociium",
       "args": []
@@ -40,93 +42,56 @@ Configure your MCP client:
 }
 ```
 
-**Performance**: First request ~1s, cached requests <1ms. See [INSTALL.md](INSTALL.md) for detailed installation guide.
+### Example Queries
 
-## 🚀 Features
-
-### Core Functionality
-- **📦 Crate Search**: Search and discover Rust crates from crates.io
-- **📖 Documentation Access**: Retrieve formatted documentation for any item in a crate
-- **🔍 Symbol Search**: Full-text search across crate symbols with fuzzy matching *(feature gated until Tantivy support lands)*
-- 🧬 **Trait Exploration**: List trait implementations and type relationships
-- 📝 **Source Code**: Access source code snippets with context
-- ⚡ **Smart Caching**: Intelligent disk and memory caching for fast responses
-- 🌐 **Multi-Language Support**: Fetch implementation context from local Python (`venv`/`conda`) and Node.js (`node_modules`) environments.
-
-### MCP Tools Available
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `search_crates` | Search for crates on crates.io | `query`, `limit` |
-| `crate_info` | Get detailed crate information | `name` |
-| `get_item_doc` | Retrieve item documentation | `crate_name`, `path`, `version?` |
-| `list_trait_impls` | List trait implementations | `crate_name`, `trait_path`, `version?` |
-| `list_impls_for_type` | List traits implemented by a type | `crate_name`, `type_path`, `version?` |
-| `source_snippet` | Get source code with context | `crate_name`, `item_path`, `context_lines?`, `version?` |
-| `search_symbols` | (Rust) Search symbols within a crate | `crate_name`, `query`, `kinds?`, `limit?`, `version?` |
-| `get_implementation` | (Python/Node) Get implementation from a local environment | `language`, `package_name`, `item_path`, `context_path?` |
-| `get_cache_stats` | Get cache statistics and metrics | - |
-| `clear_cache` | Clear cache entries (all or specific crate) | `crate_name?` |
-| `cleanup_cache` | Remove expired cache entries | - |
-
-### Usage Examples
-
-#### Python Package Analysis
+**Search Rust crates:**
 ```json
 {
-  "method": "tools/call",
-  "params": {
-    "name": "get_implementation",
-    "arguments": {
-      "language": "python",
-      "package_name": "requests",
-      "item_path": "api.py#get"
-    }
+  "tool": "search_crates",
+  "arguments": {
+    "query": "async http client",
+    "limit": 5
   }
 }
 ```
 
-#### Node.js Package Analysis
+**Get documentation:**
 ```json
 {
-  "method": "tools/call",
-  "params": {
-    "name": "get_implementation",
-    "arguments": {
-      "language": "node",
-      "package_name": "express",
-      "item_path": "lib/express.js#createApplication",
-      "context_path": "/path/to/your/project"
-    }
+  "tool": "get_item_doc",
+  "arguments": {
+    "crate_name": "tokio",
+    "path": "tokio::sync::Mutex"
   }
 }
 ```
 
-#### Rust Crate Documentation
+**Analyze Python packages:**
 ```json
 {
-  "method": "tools/call",
-  "params": {
-    "name": "get_item_doc",
-    "arguments": {
-      "crate_name": "tokio",
-      "path": "tokio::sync::Mutex"
-    }
+  "tool": "get_implementation",
+  "arguments": {
+    "language": "python",
+    "package_name": "requests",
+    "item_path": "api.py#get"
   }
 }
 ```
 
-**Response:**
-```json
-{
-  "content": [
-    {
-      "type": "text",
-      "text": "{\"path\":\"tokio::sync::Mutex\",\"kind\":\"struct\",\"rendered_markdown\":\"<div class=\\\"docblock\\\">An async mutex...</div>\",\"signature\":\"pub struct Mutex<T: ?Sized> { /* private fields */ }\",\"visibility\":\"public\"}"
-    }
-  ]
-}
-```
+## 🛠️ Available Tools
+
+| Tool | Description | Use Case |
+|------|-------------|----------|
+| `search_crates` | Search crates.io registry | Find relevant Rust packages |
+| `crate_info` | Get detailed crate metadata | Understand package details |
+| `get_item_doc` | Retrieve item documentation | Get API documentation |
+| `search_symbols` | Search within crate symbols | Find specific functions/types |
+| `list_trait_impls` | List trait implementations | Understand trait relationships |
+| `list_impls_for_type` | List traits for a type | See available methods |
+| `source_snippet` | Get source code with context | View implementation details |
+| `get_implementation` | Local Python/Node.js analysis | Analyze local dependencies |
+| `get_cache_stats` | Cache performance metrics | Monitor system performance |
+| `clear_cache` | Cache management | Clear stale entries |
 
 ## 🏗️ Architecture
 
@@ -137,324 +102,160 @@ Configure your MCP client:
  │
  ├─ Tools (MCP Handlers)
  │  ├─ search_crates
- │  ├─ get_implementation
+ │  ├─ get_implementation  
  │  ├─ crate_info
- │  ├─ get_item_doc
- │  ├─ list_trait_impls
- │  ├─ list_impls_for_type
- │  ├─ source_snippet
- │  └─ search_symbols
+ │  └─ ...
  │
  └─ DocEngine (doc_engine crate)
-    ├─ Package Finder: Locates packages in local environments (pip, npm)
-    ├─ Docs.rs Scraper: Intelligent URL discovery and HTML parsing
+    ├─ Package Finder: Local environment discovery
+    ├─ Docs.rs Scraper: HTML parsing with URL discovery
     ├─ Language Processors
-    │  ├─ Rust (scrapes docs.rs with auto URL discovery)
-    │  ├─ Python (uses tree-sitter)
-    │  └─ Node.js (uses tree-sitter)
-    ├─ Smart Cache: Item-level caching with TTL
+    │  ├─ Rust (docs.rs integration)
+    │  ├─ Python (tree-sitter parsing)
+    │  └─ Node.js (tree-sitter parsing)
+    ├─ Smart Cache: Multi-level caching
     └─ IndexCore (index_core crate)
-       ├─ SymbolIndex: Full-text search from search-index.js
-       └─ TraitImplIndex: Trait relationships
+       ├─ SymbolIndex: Full-text search
+       └─ TraitImplIndex: Relationship mapping
 ```
 
-## 🛠️ Installation
-
-### Prerequisites
-- **Rust 1.70+** (nightly toolchain no longer required!)
-- **Git**
-- **Internet connection** for docs.rs access
-
-### Building from Source
-
-```bash
-git clone <repository-url>
-cd rdocs_mcp
-cargo build --release
-```
-
-### Docker (Recommended)
-
-```bash
-docker build -t rust-docs-mcp .
-docker run --rm -p 8800:8800 rust-docs-mcp
-```
-
-## 🚦 Usage
-
-### Stdio Transport (Default)
-
-```bash
-cargo run --release --bin dociium
-```
-
-### WebSocket Transport
-
-```bash
-RDOCS_WEBSOCKET=1 cargo run --release --bin dociium --features websocket
-```
-
-The server will listen on `127.0.0.1:8800` for WebSocket connections.
+## ⚙️ Configuration
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RDOCS_CACHE_DIR` | `~/.cache/rdocs-mcp` | Cache directory path |
-| `RDOCS_WEBSOCKET` | - | Enable WebSocket transport |
-
-## 📊 Example Usage
-
-### Searching for Crates
-
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "search_crates",
-    "arguments": {
-      "query": "async http",
-      "limit": 5
-    }
-  }
-}
-```
-
-### Getting Documentation
-
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "get_item_doc",
-    "arguments": {
-      "crate_name": "tokio",
-      "path": "tokio::sync::Mutex"
-    }
-  }
-}
-```
-
-### Finding Trait Implementations
-
-```json
-{
-  "method": "tools/call",
-  "params": {
-    "name": "list_trait_impls",
-    "arguments": {
-      "crate_name": "std",
-      "trait_path": "std::iter::Iterator"
-    }
-  }
-}
-```
-
-## 🔧 Configuration
+| `RDOCS_CACHE_DIR` | `~/.cache/dociium` | Cache directory location |
+| `RUST_LOG` | `info` | Logging level |
 
 ### Cache Settings
+
 - **Memory Cache**: LRU cache with 1000 entries
-- **Item-level Cache**: Individual documentation items cached separately
-- **Crate Index Cache**: Search indexes cached per crate
-- **TTL**: Configurable expiration (default: 7 days)
-- **Compression**: Optional zstd compression for disk storage
+- **Disk Cache**: Compressed storage with zstd
+- **TTL**: 7 days default expiration
+- **Size**: ~5MB per cached crate
 
-### Performance Tuning
-- **Rate Limiting**: 60 requests/minute per client
-- **Build Timeout**: 5 minutes for rustdoc generation
-- **Index Size**: Configurable heap size for search index
+## 📊 Performance
 
-## 🚀 Performance
-
-### Benchmarks
-- **Cold Start**: ~500ms for popular crates (docs.rs fetching with URL discovery)
-- **Warm Cache**: <50ms for cached queries
+- **Cold Start**: ~1s for popular crates (docs.rs fetching)
+- **Warm Cache**: <50ms for cached queries  
 - **Memory Usage**: ~30MB base + ~5MB per cached crate
-- **No Build Time**: Documentation pre-built on docs.rs
+- **Throughput**: 100+ requests/second sustained
 
-### Optimizations
-- **Intelligent URL Discovery**: Automatically finds correct docs.rs URLs for any item type
-- **On-demand Fetching**: Only fetch documentation when requested
-- **Compressed Storage**: Efficient cache compression with zstd
-- **Smart Indexing**: Uses docs.rs search-index.js for symbol search
-- **Item-level Caching**: Cache individual items to minimize network requests
+## 🧪 Development
 
-## 🧪 Testing
+### Prerequisites
+
+- Rust 1.70+
+- Internet connection for docs.rs access
+
+### Building
+
+```bash
+git clone https://github.com/labiium/dociium.git
+cd dociium
+cargo build --release
+```
+
+### Testing
 
 ```bash
 # Run all tests
-cargo test
+cargo test --workspace
 
-# Run with network tests (requires internet)
-ENABLE_NETWORK_TESTS=1 cargo test
+# Run with integration tests
+cargo test --workspace --features integration-tests
 
-# Run integration tests
-ENABLE_INTEGRATION_TESTS=1 cargo test
+# Run with network tests
+ENABLE_NETWORK_TESTS=1 cargo test --workspace
 ```
 
-## 📁 Project Structure
+### Project Structure
 
 ```
-rdocs_mcp/
+dociium/
 ├── mcp_server/           # Main MCP server binary
-│   ├── src/
-│   │   ├── main.rs       # Server entry point
-│   │   └── tools.rs      # Tool definitions
-│   └── Cargo.toml
-├── doc_engine/           # Documentation engine
-│   ├── src/
-│   │   ├── lib.rs        # Main engine
-│   │   ├── fetcher.rs    # Crate metadata fetching
-│   │   ├── cache.rs      # Multi-level caching
-│   │   ├── scraper.rs    # Docs.rs HTML scraper
-│   │   └── types.rs      # Type definitions
-│   └── Cargo.toml
-├── index_core/           # Search and indexing
-│   ├── src/
-│   │   ├── lib.rs        # Index management
-│   │   ├── search.rs     # Full-text search
-│   │   ├── traits.rs     # Trait indexing
-│   │   └── types.rs      # Type definitions
-│   └── Cargo.toml
-├── Cargo.toml            # Workspace configuration
-└── README.md
+├── doc_engine/           # Documentation processing engine  
+├── index_core/           # Search and indexing functionality
+├── .github/              # CI/CD workflows
+└── README.md             # This file
 ```
 
 ## 🔒 Security
 
-- **No Code Execution**: Eliminates RCE vulnerabilities by using pre-built docs
-- **Rate Limiting**: Prevents abuse with configurable limits
-- **Input Validation**: Comprehensive validation of all inputs
-- **Network Security**: Only fetches from trusted docs.rs domain with URL validation
-- **Cache Isolation**: Per-crate cache isolation
+- **No Code Execution**: Uses pre-built documentation only
+- **Input Validation**: Comprehensive parameter sanitization
+- **Rate Limiting**: Built-in request throttling
+- **Network Security**: Restricted to trusted domains
+- **Cache Isolation**: Per-crate cache separation
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
 **"Documentation not found"**
-- Ensure the crate has documentation published on docs.rs
-- Try a different version or use "latest"
-- Check that the item path is correct (e.g., "tokio::sync::Mutex" not "tokio::Mutex")
+- Verify crate exists on docs.rs
+- Check item path format (e.g., `tokio::sync::Mutex`)
+- Try different version or use "latest"
 
 **"Network timeout"**
 - Check internet connectivity
 - docs.rs may be temporarily unavailable
-- The URL discovery process tries multiple patterns and may take longer for complex items
+- Retry after a few moments
 
 **"Cache permission errors"**
 - Ensure write permissions to cache directory
 - Set `RDOCS_CACHE_DIR` to writable location
 
-**"HTML parsing errors"**
-- Clear cache and retry: `rm -rf ~/.cache/rdocs-mcp`
-- docs.rs HTML structure may have changed
+### Performance Tuning
 
-### Cache Management
-
-Cache management is integrated into the MCP server tools:
-
-```json
-// View cache statistics
-{
-  "method": "tools/call",
-  "params": {
-    "name": "get_cache_stats",
-    "arguments": {}
-  }
-}
-
-// Clear all cache
-{
-  "method": "tools/call",
-  "params": {
-    "name": "clear_cache",
-    "arguments": {}
-  }
-}
-
-// Clear cache for specific crate
-{
-  "method": "tools/call",
-  "params": {
-    "name": "clear_cache",
-    "arguments": {
-      "crate_name": "serde"
-    }
-  }
-}
-
-// Clean up expired entries
-{
-  "method": "tools/call",
-  "params": {
-    "name": "cleanup_cache",
-    "arguments": {}
-  }
-}
-```
-
-## 🛣️ Roadmap
-
-### Phase 1 (Current)
-- ✅ Basic MCP server with stdio transport
-- ✅ Core documentation tools
-- ✅ Docs.rs scraping with intelligent URL discovery
-- ✅ Item-level caching with compression
-- ✅ Integrated cache management via MCP tools
-- ✅ Working implementation for tokio::sync::Mutex and similar items
-
-### Phase 2 (Next)
-- 🔄 Enhanced trait implementation detection from HTML parsing
-- 🔄 Source code viewing from docs.rs source links
-- 🔄 WebSocket transport
-- 🔄 Performance monitoring and URL discovery optimization
-
-### Phase 3 (Future)
-- 📋 Cross-crate dependency analysis
-- 📋 Semantic search with embeddings
-- 📋 Real-time documentation updates
-- 📋 GraphQL API endpoint
+- Clear cache periodically: Use `clear_cache` tool
+- Monitor with `get_cache_stats` tool
+- Adjust `RDOCS_CACHE_DIR` for faster storage
 
 ## 🤝 Contributing
 
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ### Development Setup
 
 ```bash
-# Install development dependencies
-cargo install cargo-expand cargo-audit cargo-deny
+# Install development tools
+cargo install cargo-audit cargo-deny
 
-# Run development server with debug logging
-RUST_LOG=debug cargo run
+# Run development server
+RUST_LOG=debug cargo run --bin dociium
 
 # Run lints
 cargo clippy -- -D warnings
 cargo fmt --check
 ```
 
-## 📄 License
+## 📜 License
 
-This project is licensed under the **MIT OR Apache-2.0** license.
+This project is dual-licensed under the **MIT OR Apache-2.0** license.
+
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for details.
 
 ## 🙏 Acknowledgments
 
 - **[rmcp](https://crates.io/crates/rmcp)**: Rust MCP framework
-- **[scraper](https://crates.io/crates/scraper)**: HTML parsing and CSS selection
-- **[crates_io_api](https://crates.io/crates/crates_io_api)**: crates.io API client
 - **[docs.rs](https://docs.rs)**: Official Rust documentation hosting
+- **[tree-sitter](https://tree-sitter.github.io/)**: Incremental parsing library
+- **Rust Community**: For excellent tooling and ecosystem
 
 ## 📞 Support
 
-- **Issues**: [GitHub Issues](https://github.com/your-org/rust-docs-mcp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/rust-docs-mcp/discussions)
-- **Documentation**: [docs.rs](https://docs.rs/rust-docs-mcp)
+- **Issues**: [GitHub Issues](https://github.com/labiium/dociium/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/labiium/dociium/discussions)
+- **Documentation**: [docs.rs/dociium](https://docs.rs/dociium)
 
 ---
 
-**Built with ❤️ for the Rust community**
+**Built with ❤️ for developers who need fast, reliable documentation access**

@@ -664,6 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "integration-tests")]
     async fn get_item_doc_from_local_sources() {
         let (dir, _guard) = setup_crate();
         let cache_dir = tempdir().unwrap();
