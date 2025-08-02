@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use tracing::{debug, info};
 
-use crate::types::*;
+use crate::index_core::types::*;
 
 /// Search index data from docs.rs
 #[derive(Debug, Clone, Serialize, Deserialize)]

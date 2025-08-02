@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use tracing::debug;
 
-use crate::types::*;
+use crate::index_core::types::*;
 
 /// Search engine for documentation items
 pub struct SearchEngine {

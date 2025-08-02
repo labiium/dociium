@@ -4,8 +4,8 @@
 //! build rustdoc JSON, and provide a high-level API for querying documentation.
 //! It also supports fetching source code from local environments for Python and Node.js.
 
+use crate::index_core::{IndexCore, SymbolIndex, TraitImplIndex};
 use anyhow::{Context, Result};
-use index_core::{IndexCore, SymbolIndex, TraitImplIndex};
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -16,7 +16,7 @@ use std::{
 use tokio::{fs, sync::Mutex};
 use tracing::{info, warn};
 
-use crate::processors::traits::{ImplementationContext, LanguageProcessor};
+use crate::doc_engine::processors::traits::{ImplementationContext, LanguageProcessor};
 
 pub mod cache;
 pub mod fetcher;
@@ -29,7 +29,9 @@ pub mod types;
 pub use types::*;
 
 /// Helper function to convert between source location types
-fn convert_source_location(sl: Option<index_core::SourceLocation>) -> Option<SourceLocation> {
+fn convert_source_location(
+    sl: Option<crate::index_core::types::SourceLocation>,
+) -> Option<SourceLocation> {
     sl.map(|s| SourceLocation {
         file: s.file,
         line: s.line,
@@ -405,13 +407,13 @@ impl CrateDocumentation {
         index_core: &IndexCore,
     ) -> Result<Self> {
         // Convert to index_core types
-        let index_core_search_data = index_core::traits::SearchIndexData {
+        let index_core_search_data = crate::index_core::traits::SearchIndexData {
             crate_name: search_index_data.crate_name.clone(),
             version: search_index_data.version.clone(),
             items: search_index_data
                 .items
                 .iter()
-                .map(|item| index_core::traits::SearchIndexItem {
+                .map(|item| crate::index_core::traits::SearchIndexItem {
                     name: item.name.clone(),
                     kind: item.kind.clone(),
                     path: item.path.clone(),

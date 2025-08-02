@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
-use crate::types::{ItemDoc, SourceLocation};
+use crate::doc_engine::types::{ItemDoc, SourceLocation};
 
 /// Docs.rs scraper for fetching documentation
 pub struct DocsRsScraper {
@@ -20,7 +20,7 @@ pub struct DocsRsScraper {
     base_url: String,
 }
 
-use crate::types::{SearchIndexData, SearchIndexItem};
+use crate::doc_engine::types::{SearchIndexData, SearchIndexItem};
 
 /// Configuration for the docs.rs scraper
 #[derive(Debug, Clone)]

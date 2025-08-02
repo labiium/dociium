@@ -3,8 +3,8 @@
 //! A Model Context Protocol server that provides comprehensive access to Rust crate documentation,
 //! trait implementations, and source code exploration.
 
+use crate::doc_engine::DocEngine;
 use anyhow::Result;
-use doc_engine::DocEngine;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::{CallToolResult, Content, ErrorData, Implementation, ServerCapabilities, ServerInfo},

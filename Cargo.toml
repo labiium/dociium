@@ -1,5 +1,5 @@
 [workspace]
-members = ["mcp_server", "doc_engine", "index_core"]
+members = ["mcp_server"]
 resolver = "2"
 default-members = ["mcp_server"]
 

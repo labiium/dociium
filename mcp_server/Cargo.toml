@@ -33,9 +33,33 @@ crates_io_api = { workspace = true }
 tempfile = { workspace = true }
 reqwest = { workspace = true }
 
-# Local crates
-doc_engine = { path = "../doc_engine", version = "0.1.0" }
-index_core = { path = "../index_core", version = "0.1.0" }
+# Additional dependencies from merged crates
+scraper = { workspace = true }
+flate2 = { workspace = true }
+zstd = { workspace = true }
+chrono = { workspace = true }
+governor = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+walkdir = { workspace = true }
+futures = { workspace = true }
+prmpt = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-python = { workspace = true }
+tree-sitter-javascript = { workspace = true }
+tree-sitter-typescript = { workspace = true }
+tar = "0.4"
+regex = "1.10"
+semver = "1.0"
+url = "2.5"
+bytes = "1.5"
+lru = { workspace = true }
+bincode = { workspace = true }
+rayon = "1.8"
+unicode-normalization = "0.1"
+fnv = "1.0"
+thiserror = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -47,3 +71,5 @@ default = ["stdio"]
 stdio = []
 websocket = []
 dev = ["tokio/tracing"]
+network-tests = []
+integration-tests = []

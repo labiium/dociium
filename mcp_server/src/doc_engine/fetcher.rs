@@ -16,7 +16,7 @@ use tar::Archive;
 use tempfile::TempDir;
 use tracing::{debug, info, instrument, warn};
 
-use crate::types::*;
+use crate::doc_engine::types::*;
 
 /// Rate limiter for crates.io API calls (10 requests per second)
 type ApiRateLimiter = RateLimiter<

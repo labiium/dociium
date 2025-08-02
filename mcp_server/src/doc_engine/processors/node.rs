@@ -1,5 +1,5 @@
 use super::traits::{ImplementationContext, LanguageProcessor};
-use crate::finder;
+use crate::doc_engine::finder;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::Path;

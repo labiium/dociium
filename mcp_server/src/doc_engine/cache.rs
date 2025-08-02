@@ -13,7 +13,8 @@ use std::{
 use tracing::{debug, info};
 use zstd::stream::{Decoder, Encoder};
 
-use crate::types::{
+use super::CrateDocumentation;
+use crate::doc_engine::types::{
     CacheConfig, CacheOperation, CacheOperationResult, CacheStatistics, CrateCacheEntry,
     ItemCacheEntry, ItemDoc, SearchIndexData,
 };
@@ -92,7 +93,7 @@ impl Cache {
     }
 
     /// Store crate documentation in cache
-    pub fn store_crate_docs(&self, key: &str, docs: &crate::CrateDocumentation) -> Result<()> {
+    pub fn store_crate_docs(&self, key: &str, docs: &CrateDocumentation) -> Result<()> {
         let serialized =
             bincode::serialize(docs).context("Failed to serialize crate documentation")?;
 
@@ -142,13 +143,13 @@ impl Cache {
     }
 
     /// Retrieve crate documentation from cache
-    pub fn get_crate_docs(&self, key: &str) -> Result<Option<crate::CrateDocumentation>> {
+    pub fn get_crate_docs(&self, key: &str) -> Result<Option<CrateDocumentation>> {
         // Check memory cache first
         {
             let mut cache = self.memory_cache.lock().unwrap();
             if let Some(item) = cache.get_mut(key) {
                 item.last_accessed = SystemTime::now();
-                let docs: crate::CrateDocumentation = bincode::deserialize(&item.data)
+                let docs: CrateDocumentation = bincode::deserialize(&item.data)
                     .context("Failed to deserialize cached documentation")?;
                 debug!("Cache hit (memory) for: {}", key);
                 return Ok(Some(docs));
@@ -163,7 +164,7 @@ impl Cache {
                 bincode::deserialize(&entry_bytes).context("Failed to deserialize cache entry")?;
 
             let decompressed = self._decompress_data(&entry.data)?;
-            let docs: crate::CrateDocumentation = bincode::deserialize(&decompressed)
+            let docs: CrateDocumentation = bincode::deserialize(&decompressed)
                 .context("Failed to deserialize cached documentation")?;
 
             // Update last accessed time

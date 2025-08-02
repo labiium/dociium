@@ -3,7 +3,7 @@ use regex::Regex;
 use std::fs;
 use walkdir::WalkDir;
 
-use crate::{
+use crate::doc_engine::{
     finder,
     types::{ItemDoc, SourceLocation},
 };
