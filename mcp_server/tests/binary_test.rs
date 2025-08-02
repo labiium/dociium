@@ -102,8 +102,8 @@ fn test_workspace_binary_target() {
     let packages = json["packages"].as_array().unwrap();
     let our_package = packages
         .iter()
-        .find(|p| p["name"].as_str() == Some("mcp_server"))
-        .expect("Should find mcp_server package");
+        .find(|p| p["name"].as_str() == Some("dociium"))
+        .expect("Should find dociium package");
 
     // Check that it has a binary target
     let targets = our_package["targets"].as_array().unwrap();

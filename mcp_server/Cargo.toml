@@ -1,13 +1,17 @@
 [package]
-name = "mcp_server"
+name = "dociium"
 version.workspace = true
 edition.workspace = true
-description = "MCP server for Rust documentation queries"
+description = "Multi-Language Documentation & Code MCP Server - Fast documentation access for Rust, Python, and Node.js"
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["mcp", "documentation", "rust", "python", "nodejs"]
+categories = ["development-tools", "api-bindings"]
+authors = ["Labiium <contact@labiium.com>"]
 
 [lib]
-name = "mcp_server"
+name = "dociium"
 path = "src/lib.rs"
 
 [[bin]]
@@ -30,8 +34,8 @@ tempfile = { workspace = true }
 reqwest = { workspace = true }
 
 # Local crates
-doc_engine = { path = "../doc_engine" }
-index_core = { path = "../index_core" }
+doc_engine = { path = "../doc_engine", version = "0.1.0" }
+index_core = { path = "../index_core", version = "0.1.0" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

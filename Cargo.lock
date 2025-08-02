@@ -623,6 +623,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dociium"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "crates_io_api",
+ "doc_engine",
+ "index_core",
+ "reqwest 0.12.20",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dtoa"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1591,27 +1612,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8263075bb86c5a1b1427b5ae862e8889656f126e9f77c484496e8b47cf5c5558"
 dependencies = [
  "regex-automata 0.1.10",
-]
-
-[[package]]
-name = "mcp_server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "crates_io_api",
- "doc_engine",
- "index_core",
- "reqwest 0.12.20",
- "rmcp",
- "schemars",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-test",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

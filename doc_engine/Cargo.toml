@@ -1,9 +1,13 @@
 [package]
 name = "doc_engine"
-version = "0.1.0"
-edition = "2021"
-description = "Documentation engine for fetching and processing Rust crate documentation"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+description = "Documentation processing engine for Rust crates with docs.rs integration"
+license.workspace = true
+repository.workspace = true
+keywords = ["documentation", "rust", "docs-rs", "parser"]
+categories = ["development-tools", "parsing"]
+authors = ["Labiium <contact@labiium.com>"]
 
 
 [features]

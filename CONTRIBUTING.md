@@ -32,10 +32,13 @@ Thank you for your interest in contributing to DOCIIUM! This guide will help you
 # Install Rust if you haven't already
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Clone and build
+# Install from crates.io
+cargo install dociium
+
+# OR install from source
 git clone https://github.com/labiium/dociium.git
 cd dociium
-cargo build
+cargo install --path mcp_server
 ```
 
 ### Development Tools
@@ -236,6 +239,7 @@ perf(scraper): optimize HTML parsing with streaming parser
    cargo test --workspace
    cargo clippy --workspace --all-targets -- -D warnings
    cargo fmt --check
+   cargo build --release --bin dociium
    ```
 
 3. **Update documentation** if needed

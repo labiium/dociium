@@ -1,9 +1,13 @@
 [package]
 name = "index_core"
-version = "0.1.0"
-edition = "2021"
-description = "Search and indexing core for Rust documentation"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+description = "Search and indexing functionality for documentation with full-text search"
+license.workspace = true
+repository.workspace = true
+keywords = ["search", "indexing", "documentation", "full-text"]
+categories = ["development-tools", "text-processing"]
+authors = ["Labiium <contact@labiium.com>"]
 
 [dependencies]
 # Workspace dependencies

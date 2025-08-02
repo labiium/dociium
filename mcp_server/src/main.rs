@@ -3,7 +3,7 @@
 //! This binary runs the Rust Documentation MCP Server using the library implementation.
 
 use anyhow::Result;
-use mcp_server::RustDocsMcpServer;
+use dociium::RustDocsMcpServer;
 use rmcp::{transport::stdio, ServiceExt};
 use tracing_subscriber::EnvFilter;
 

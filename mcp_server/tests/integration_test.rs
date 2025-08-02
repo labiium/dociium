@@ -3,14 +3,13 @@
 //! Simplified tests to avoid compiler issues while still verifying functionality.
 
 use anyhow::Result;
-use mcp_server::{
+use dociium::{
     CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
     SourceSnippetParams,
 };
 use rmcp::{handler::server::tool::Parameters, model::CallToolResult, ServerHandler};
 use tempfile::TempDir;
-use tokio;
 
 /// Helper function to create a test server instance
 async fn create_test_server() -> Result<(RustDocsMcpServer, TempDir)> {
@@ -316,8 +315,7 @@ async fn test_parameter_validation_crate_names() {
         let response = server.crate_info(params).await;
         assert!(
             response.is_err(),
-            "Should reject invalid crate name: {}",
-            invalid_name
+            "Should reject invalid crate name: {invalid_name}"
         );
     }
 }
@@ -345,8 +343,7 @@ async fn test_parameter_validation_item_paths() {
         let response = server.get_item_doc(params).await;
         assert!(
             response.is_err(),
-            "Should reject invalid path: {}",
-            invalid_path
+            "Should reject invalid path: {invalid_path}"
         );
     }
 }
@@ -386,7 +383,7 @@ async fn test_concurrent_requests() {
         let server_clone = server.clone();
         let handle = tokio::spawn(async move {
             let params = Parameters(SearchCratesParams {
-                query: format!("web{}", i),
+                query: format!("web{i}"),
                 limit: Some(3),
             });
             server_clone.search_crates(params).await
@@ -401,7 +398,7 @@ async fn test_concurrent_requests() {
             Ok(_) => {}
             Err(e) => {
                 // Allow network failures in concurrent tests
-                eprintln!("Concurrent request failed (expected): {}", e);
+                eprintln!("Concurrent request failed (expected): {e}");
             }
         }
     }
@@ -424,8 +421,7 @@ async fn test_response_performance() {
     // Should respond within reasonable time (adjust as needed)
     assert!(
         duration.as_secs() < 30,
-        "Response took too long: {:?}",
-        duration
+        "Response took too long: {duration:?}"
     );
 }
 

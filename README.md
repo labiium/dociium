@@ -20,11 +20,19 @@ A high-performance **Model Context Protocol (MCP)** server that provides compreh
 
 ### Installation
 
+Install DOCIIUM using any of these methods:
+
 ```bash
-# Install from source
+# From crates.io (recommended)
+cargo install dociium
+
+# From source
 git clone https://github.com/labiium/dociium.git
 cd dociium
 cargo install --path mcp_server
+
+# From git directly
+cargo install --git https://github.com/labiium/dociium.git --bin dociium
 ```
 
 ### Basic Usage
@@ -154,7 +162,7 @@ Configure your MCP client (Claude Desktop, etc.):
 ```bash
 git clone https://github.com/labiium/dociium.git
 cd dociium
-cargo build --release
+cargo build --release --bin dociium
 ```
 
 ### Testing
@@ -233,7 +241,7 @@ cargo install cargo-audit cargo-deny
 RUST_LOG=debug cargo run --bin dociium
 
 # Run lints
-cargo clippy -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 

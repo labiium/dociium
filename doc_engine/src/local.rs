@@ -82,30 +82,38 @@ pub fn fetch_local_item_doc(crate_name: &str, version: &str, item_path: &str) ->
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+
+    #[cfg(feature = "integration-tests")]
     use std::fs;
+    #[cfg(feature = "integration-tests")]
     use std::path::Path;
+    #[cfg(feature = "integration-tests")]
     use tempfile::tempdir;
 
+    #[cfg(feature = "integration-tests")]
     struct CargoHomeGuard(Option<String>);
+
+    #[cfg(feature = "integration-tests")]
     impl CargoHomeGuard {
         fn set(path: &Path) -> Self {
-            let old = std::env::var("CARGO_HOME").ok();
+            let old_value = std::env::var("CARGO_HOME").ok();
             std::env::set_var("CARGO_HOME", path);
-            CargoHomeGuard(old)
+            Self(old_value)
         }
     }
+
+    #[cfg(feature = "integration-tests")]
     impl Drop for CargoHomeGuard {
         fn drop(&mut self) {
-            if let Some(ref old) = self.0 {
-                std::env::set_var("CARGO_HOME", old);
+            if let Some(old_value) = &self.0 {
+                std::env::set_var("CARGO_HOME", old_value);
             } else {
                 std::env::remove_var("CARGO_HOME");
             }
         }
     }
 
-    /// Set up a temporary crate in a fake cargo registry for testing
+    #[cfg(feature = "integration-tests")]
     fn setup_crate() -> (tempfile::TempDir, CargoHomeGuard) {
         let temp = tempdir().unwrap();
         let guard = CargoHomeGuard::set(temp.path());

@@ -97,14 +97,14 @@ pub fn find_rust_crate_path(crate_name: &str, version: &str) -> Result<PathBuf> 
 
     // Determine cargo home directory
     let cargo_home = std::env::var("CARGO_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{}/.cargo", h)))
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.cargo")))
         .context("Could not determine CARGO_HOME")?;
     let registry_src = Path::new(&cargo_home).join("registry").join("src");
 
     for entry in std::fs::read_dir(&registry_src).context("Failed to read cargo registry")? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            let candidate = entry.path().join(format!("{}-{}", crate_name, version));
+            let candidate = entry.path().join(format!("{crate_name}-{version}"));
             if candidate.exists() {
                 return Ok(candidate);
             }
@@ -121,23 +121,27 @@ pub fn find_rust_crate_path(crate_name: &str, version: &str) -> Result<PathBuf> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    #[cfg(feature = "integration-tests")]
     use std::path::Path;
-    use tempfile::tempdir;
 
     /// Helper guard to temporarily set CARGO_HOME for tests
+    #[cfg(feature = "integration-tests")]
     struct CargoHomeGuard(Option<String>);
+
+    #[cfg(feature = "integration-tests")]
     impl CargoHomeGuard {
         fn set(path: &Path) -> Self {
-            let old = std::env::var("CARGO_HOME").ok();
+            let old_value = std::env::var("CARGO_HOME").ok();
             std::env::set_var("CARGO_HOME", path);
-            CargoHomeGuard(old)
+            Self(old_value)
         }
     }
+
+    #[cfg(feature = "integration-tests")]
     impl Drop for CargoHomeGuard {
         fn drop(&mut self) {
-            if let Some(ref old) = self.0 {
-                std::env::set_var("CARGO_HOME", old);
+            if let Some(old_value) = &self.0 {
+                std::env::set_var("CARGO_HOME", old_value);
             } else {
                 std::env::remove_var("CARGO_HOME");
             }
@@ -154,6 +158,8 @@ mod tests {
     #[test]
     #[cfg(feature = "integration-tests")]
     fn finds_crate_in_registry() {
+        use std::fs;
+        use tempfile::tempdir;
         let temp = tempdir().unwrap();
         let _guard = CargoHomeGuard::set(temp.path());
         let crate_dir = temp
@@ -172,6 +178,8 @@ mod tests {
     #[test]
     #[cfg(feature = "integration-tests")]
     fn errors_on_missing_crate() {
+        use std::fs;
+        use tempfile::tempdir;
         let temp = tempdir().unwrap();
         let _guard = CargoHomeGuard::set(temp.path());
         let registry = temp.path().join("registry").join("src").join("test-reg");
