@@ -28,8 +28,8 @@ cargo install dociium
 
 # From source
 git clone https://github.com/labiium/dociium.git
-cd dociium
-cargo install --path mcp_server
+cd dociium/mcp_server
+cargo install --path .
 
 # From git directly
 cargo install --git https://github.com/labiium/dociium.git dociium
