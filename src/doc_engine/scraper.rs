@@ -7,7 +7,6 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use scraper::{Html, Selector};
 
-use serde_json::Value;
 
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
@@ -359,30 +358,139 @@ impl DocsRsScraper {
         crate_name: &str,
         version: &str,
     ) -> Result<SearchIndexData> {
-        // The search-index.js file typically contains a JavaScript variable assignment
-        // We need to extract the JSON data from it
+        // Hardened extraction of docs.rs search-index.js content.
+        //
+        // Historical formats (observed):
+        //  1. var searchIndex = {"crate":{"items":[...],"paths":[...]}, ...};
+        //  2. searchIndex = {"crate":{"i":[...],"p":[...]}, ...};
+        //  3. self.searchIndex = {...};
+        //  4. window.searchIndex = {...};
+        //
+        // Risks:
+        //  - Naïve first/last brace slice can include trailing loader code or miss if
+        //    braces appear in a banner comment.
+        //  - Future minification may rename top variable but internal crate map
+        //    stays JSON-like.
+        //
+        // Strategy:
+        //  1. Attempt targeted regex captures around common assignment patterns.
+        //  2. If unsuccessful, perform a brace-balanced extraction starting at the
+        //     first occurrence of the crate key (crate or crate with '_' instead of '-').
+        //  3. Parse as JSON; locate crate entry under either original or sanitized key.
+        //
+        // NOTE: ETag / backoff integration is handled at the fetch layer; this parser
+        // remains stateless but surfaces granular errors to allow upstream retry/
+        // classification (e.g. distinguishing "structure changed" vs "crate missing").
+        use regex::Regex;
+        use serde_json::Value;
 
-        // Look for patterns like: var searchIndex = {...} or searchIndex[...] = {...}
-        let json_start = js_content
-            .find('{')
-            .ok_or_else(|| anyhow!("No JSON data found in search index"))?;
+        let crate_key_alt = crate_name.replace('-', "_");
+        let candidate_keys = [crate_name, crate_key_alt.as_str()];
 
-        let json_end = js_content
-            .rfind('}')
-            .ok_or_else(|| anyhow!("No closing brace found in search index"))?;
+        // Helper: try parsing a JSON candidate string into Value and fetch crate map.
+        let try_parse = |json_str: &str| -> Result<(Value, Value)> {
+            let v: Value =
+                serde_json::from_str(json_str).context("Failed to parse search index JSON")?;
+            for key in candidate_keys {
+                if let Some(entry) = v.get(key) {
+                    return Ok((v.clone(), entry.clone()));
+                }
+            }
+            Err(anyhow!(
+                "Crate data not found in parsed search index object (keys tried: {:?})",
+                candidate_keys
+            ))
+        };
 
-        let json_str = &js_content[json_start..=json_end];
+        // 1. Regex-based captures (non-greedy with manual brace balance after initial '{').
+        let regex_patterns = [
+            r#"(?s)searchIndex\s*=\s*(\{.*\});"#,
+            r#"(?s)var\s+searchIndex\s*=\s*(\{.*\});"#,
+            r#"(?s)self\.searchIndex\s*=\s*(\{.*\});"#,
+            r#"(?s)window\.searchIndex\s*=\s*(\{.*\});"#,
+        ];
 
-        // Parse the JSON
-        let json_data: Value =
-            serde_json::from_str(json_str).context("Failed to parse search index JSON")?;
+        for pat in regex_patterns {
+            if let Ok(re) = Regex::new(pat) {
+                if let Some(caps) = re.captures(js_content) {
+                    let blob = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                    // Perform brace balance to trim trailing over-capture.
+                    if let Some(json_balanced) = Self::balanced_brace_slice(blob) {
+                        if let Ok((json_data, crate_data)) = try_parse(&json_balanced) {
+                            return self.build_search_index(
+                                crate_name,
+                                version,
+                                &crate_data,
+                                &json_data,
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
-        // Extract the data for our specific crate
-        let crate_data = json_data
-            .get(crate_name)
-            .or_else(|| json_data.get(crate_name.replace('-', "_")))
-            .ok_or_else(|| anyhow!("Crate data not found in search index"))?;
+        // 2. Fallback: locate crate key and backtrack to opening brace, then balance.
+        let mut fallback_extracted: Option<String> = None;
+        for key in candidate_keys {
+            if let Some(pos) = js_content.find(&format!("\"{key}\"")) {
+                // Backtrack to nearest '{'
+                if let Some(start) = js_content[..pos].rfind('{') {
+                    if let Some(json_balanced) = Self::balanced_brace_slice(&js_content[start..]) {
+                        fallback_extracted = Some(json_balanced);
+                        break;
+                    }
+                }
+            }
+        }
 
+        if let Some(json_blob) = fallback_extracted {
+            if let Ok((json_data, crate_data)) = try_parse(&json_blob) {
+                return self.build_search_index(crate_name, version, &crate_data, &json_data);
+            }
+        }
+
+        Err(anyhow!(
+            "Unable to extract or parse search index for crate '{}'",
+            crate_name
+        ))
+    }
+
+    /// Extract a balanced JSON slice from a string starting at the first '{'.
+    /// Returns None if braces cannot be balanced.
+    fn balanced_brace_slice(input: &str) -> Option<String> {
+        let bytes = input.as_bytes();
+        let mut depth = 0usize;
+        let mut started = false;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'{' {
+                depth += 1;
+                started = true;
+            } else if b == b'}' {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(String::from_utf8_lossy(&bytes[..=i]).to_string());
+                }
+            }
+        }
+        if started && depth == 0 {
+            Some(String::from_utf8_lossy(bytes).to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Build the strongly typed SearchIndexData from the extracted JSON subtree.
+    fn build_search_index(
+        &self,
+        crate_name: &str,
+        version: &str,
+        crate_data: &serde_json::Value,
+        root_json: &serde_json::Value,
+    ) -> Result<SearchIndexData> {
+        let _ = root_json; // reserved for future structure / schema validation
         let items_array = crate_data
             .get("items")
             .or_else(|| crate_data.get("i"))
@@ -392,7 +500,6 @@ impl DocsRsScraper {
         let mut items = Vec::new();
         let mut paths = Vec::new();
 
-        // Parse items array - format is typically: [kind_id, name, path, description, parent_path]
         for item_value in items_array {
             if let Some(item_array) = item_value.as_array() {
                 if item_array.len() >= 4 {
@@ -418,7 +525,6 @@ impl DocsRsScraper {
             }
         }
 
-        // Extract paths array if available
         if let Some(paths_array) = crate_data.get("paths").or_else(|| crate_data.get("p")) {
             if let Some(paths_arr) = paths_array.as_array() {
                 for path_value in paths_arr {

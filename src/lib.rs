@@ -16,3 +16,4 @@ pub use serde_json;
 pub mod doc_engine;
 pub mod index_core;
 pub mod server;
+pub mod shared_types;

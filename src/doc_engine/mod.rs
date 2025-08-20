@@ -273,14 +273,108 @@ impl DocEngine {
             ImportResolutionResponse, ImportResolutionResult, ImportResolutionStatus,
             ImportSymbolLocation,
         };
-        use std::collections::{HashMap, HashSet};
+        use std::collections::{HashMap, HashSet, VecDeque};
+        use std::time::{Duration, Instant};
 
-        // In-memory short-lived cache (per-process) keyed by full import line + language + package.
-        // (Could be promoted to struct field with Mutex if long-lived caching desired.)
-        static CACHE_ONCE: std::sync::OnceLock<
-            std::sync::Mutex<HashMap<String, ImportResolutionResult>>,
-        > = std::sync::OnceLock::new();
-        let cache = CACHE_ONCE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+        // ------------------------------------------------------------------
+        // Bounded LRU + TTL cache for import resolution (per-process).
+        // Key: language::package::import_line (trimmed).
+        // Capacity: 512 entries. TTL: 5 minutes.
+        // Eviction policy: remove least-recently-used (front of deque) when full.
+        // ------------------------------------------------------------------
+        struct ImportCacheEntry {
+            key: String,
+            inserted: Instant,
+            result: ImportResolutionResult,
+        }
+
+        struct ImportCache {
+            map: HashMap<String, usize>,    // key -> index in entries
+            order: VecDeque<String>,        // LRU order (front = oldest, back = newest)
+            entries: Vec<ImportCacheEntry>, // storage (swap-remove on eviction)
+            ttl: Duration,
+            capacity: usize,
+        }
+
+        impl ImportCache {
+            fn new(capacity: usize, ttl: Duration) -> Self {
+                Self {
+                    map: HashMap::new(),
+                    order: VecDeque::new(),
+                    entries: Vec::new(),
+                    ttl,
+                    capacity,
+                }
+            }
+
+            fn norm_key(lang: &str, pkg: &str, line: &str) -> String {
+                format!("{lang}::{pkg}::{}", line.trim())
+            }
+
+            fn get(&mut self, lang: &str, pkg: &str, line: &str) -> Option<ImportResolutionResult> {
+                let key = Self::norm_key(lang, pkg, line);
+                if let Some(&idx) = self.map.get(&key) {
+                    if Instant::now().duration_since(self.entries[idx].inserted) > self.ttl {
+                        self.remove(&key);
+                        return None;
+                    }
+                    // promote
+                    self.order.retain(|k| k != &key);
+                    self.order.push_back(key);
+                    return Some(self.entries[idx].result.clone());
+                }
+                None
+            }
+
+            fn insert(
+                &mut self,
+                lang: &str,
+                pkg: &str,
+                line: &str,
+                result: ImportResolutionResult,
+            ) {
+                let key = Self::norm_key(lang, pkg, line);
+                if let Some(&idx) = self.map.get(&key) {
+                    self.entries[idx].result = result;
+                    self.entries[idx].inserted = Instant::now();
+                    self.order.retain(|k| k != &key);
+                    self.order.push_back(key);
+                    return;
+                }
+                if self.entries.len() >= self.capacity {
+                    if let Some(old_key) = self.order.pop_front() {
+                        self.remove(&old_key);
+                    }
+                }
+                let entry = ImportCacheEntry {
+                    key: key.clone(),
+                    inserted: Instant::now(),
+                    result,
+                };
+                self.entries.push(entry);
+                self.order.push_back(key.clone());
+                self.map.insert(key, self.entries.len() - 1);
+            }
+
+            fn remove(&mut self, key: &str) {
+                if let Some(idx) = self.map.remove(key) {
+                    self.order.retain(|k| k != key);
+                    let last = self.entries.len() - 1;
+                    self.entries.swap(idx, last);
+                    let popped = self.entries.pop();
+                    if idx < self.entries.len() {
+                        let moved_key = self.entries[idx].key.clone();
+                        self.map.insert(moved_key, idx);
+                    }
+                    drop(popped);
+                }
+            }
+        }
+
+        static IMPORT_CACHE: std::sync::OnceLock<std::sync::Mutex<ImportCache>> =
+            std::sync::OnceLock::new();
+        let cache_mutex = IMPORT_CACHE
+            .get_or_init(|| std::sync::Mutex::new(ImportCache::new(512, Duration::from_secs(300))));
 
         let mut diagnostics = Vec::new();
         let mut import_lines: Vec<String> = Vec::new();
@@ -302,9 +396,7 @@ impl DocEngine {
             diagnostics.push("No import lines detected.".to_string());
         }
 
-        // Helper closure for cache key
-        let cache_key =
-            |lang: &str, pkg: &str, line: &str| -> String { format!("{lang}::{pkg}::{line}") };
+        // Removed unused cache_key closure (LRU cache handles key construction internally)
 
         // Process per language
         let mut results: Vec<ImportResolutionResult> = Vec::new();
@@ -331,8 +423,12 @@ impl DocEngine {
                     HashMap::new();
 
                 for raw in import_lines {
-                    let key = cache_key("rust", &params.package, &raw);
-                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                    if let Some(cached) =
+                        cache_mutex
+                            .lock()
+                            .unwrap()
+                            .get("rust", &params.package, &raw)
+                    {
                         results.push(cached);
                         continue;
                     }
@@ -353,7 +449,12 @@ impl DocEngine {
                         resolution
                             .diagnostics
                             .push("Not a Rust use statement".to_string());
-                        cache.lock().unwrap().insert(key, resolution.clone());
+                        cache_mutex.lock().unwrap().insert(
+                            "rust",
+                            &params.package,
+                            &raw,
+                            resolution.clone(),
+                        );
                         results.push(resolution);
                         continue;
                     }
@@ -506,7 +607,12 @@ impl DocEngine {
                         }
                     }
 
-                    cache.lock().unwrap().insert(key, resolution.clone());
+                    cache_mutex.lock().unwrap().insert(
+                        "python",
+                        &params.package,
+                        &raw,
+                        resolution.clone(),
+                    );
                     results.push(resolution);
                 }
             }
@@ -515,8 +621,12 @@ impl DocEngine {
                 let package_root =
                     crate::doc_engine::finder::find_python_package_path(&params.package)?;
                 for raw in import_lines {
-                    let key = cache_key("python", &params.package, &raw);
-                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                    if let Some(cached) =
+                        cache_mutex
+                            .lock()
+                            .unwrap()
+                            .get("python", &params.package, &raw)
+                    {
                         results.push(cached);
                         continue;
                     }
@@ -647,7 +757,12 @@ impl DocEngine {
                             .diagnostics
                             .push("Unsupported python import form".into());
                     }
-                    cache.lock().unwrap().insert(key, resolution.clone());
+                    cache_mutex.lock().unwrap().insert(
+                        "node",
+                        &params.package,
+                        &raw,
+                        resolution.clone(),
+                    );
                     results.push(resolution);
                 }
             }
@@ -670,8 +785,12 @@ impl DocEngine {
                 let simple_import_re =
                     regex::Regex::new(r#"^import\s+["'](?P<mod>[^"']+)["'];?"#).unwrap();
                 for raw in import_lines {
-                    let key = cache_key("node", &params.package, &raw);
-                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                    if let Some(cached) =
+                        cache_mutex
+                            .lock()
+                            .unwrap()
+                            .get("node", &params.package, &raw)
+                    {
                         results.push(cached);
                         continue;
                     }
@@ -855,7 +974,12 @@ impl DocEngine {
                             .diagnostics
                             .push("Unsupported Node import form".into());
                     }
-                    cache.lock().unwrap().insert(key, resolution.clone());
+                    cache_mutex.lock().unwrap().insert(
+                        "rust",
+                        &params.package,
+                        &raw,
+                        resolution.clone(),
+                    );
                     results.push(resolution);
                 }
             }
