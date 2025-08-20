@@ -116,14 +116,14 @@ impl SearchEngine {
 
         if !query.is_empty() {
             results.push(EnhancedSearchResult {
-                path: format!("mock::{query}"),
+                path: query.to_string(),
                 kind: "function".to_string(),
                 score: 1.0,
                 doc_summary: Some(format!("Mock documentation for {query}")),
                 source_location: None,
                 visibility: "public".to_string(),
                 signature: Some(format!("fn {query}() -> ()")),
-                module_path: "mock".to_string(),
+                module_path: "".to_string(),
                 match_highlights: vec![MatchHighlight {
                     field: "name".to_string(),
                     start: 0,
@@ -154,7 +154,7 @@ impl SearchEngine {
 
         let mut results = Vec::new();
         if !term.is_empty() && limit > 0 {
-            results.push((format!("mock::{term}"), 1.0));
+            results.push((term.to_string(), 1.0));
         }
 
         Ok(results)
@@ -339,7 +339,7 @@ mod tests {
 
         let results = engine.search("test", &config, &filters).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "mock::test");
+        assert_eq!(results[0].path, "test");
     }
 
     #[test]
@@ -347,7 +347,7 @@ mod tests {
         let engine = SearchEngine::new().unwrap();
         let results = engine.fuzzy_search("test", 2, 10).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "mock::test");
+        assert_eq!(results[0].0, "test");
     }
 
     #[test]

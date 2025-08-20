@@ -46,6 +46,9 @@ tracing-subscriber = { version = "0.3.19", features = [
     "fmt",
 ] }
 
+# CLI / UX
+clap = { version = "4.5", features = ["derive"] }
+
 # MCP Framework
 rmcp = { version = "0.2.0", features = ["server", "transport-io", "macros"] }
 
@@ -58,9 +61,9 @@ crates_io_api = "0.8"
 # HTML parsing for docs.rs scraping
 scraper = "0.19.0"
 
-# Search index and database - disabled for initial release
-# tantivy = "0.21"
-# rocksdb = "0.22"
+# Search index and database (optional feature `search-index`)
+tantivy = { version = "0.21", optional = true }
+# rocksdb integration planned for future release
 
 # Compression
 flate2 = "1.0"
@@ -79,6 +82,7 @@ sha2 = "0.10"
 # File system utilities
 tempfile = "3.8"
 walkdir = "2.4"
+dirs = "5.0"
 
 # Async utilities
 futures = "0.3"
@@ -141,3 +145,5 @@ websocket = []
 dev = ["tokio/tracing"]
 network-tests = []
 integration-tests = []
+# Enable a real search backend (Tantivy) when desired
+search-index = ["tantivy"]
