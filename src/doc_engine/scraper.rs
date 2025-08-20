@@ -348,7 +348,7 @@ impl DocsRsScraper {
             attributes,
             signature,
             examples,
-            see_also: Vec::new(), // TODO: Extract "See also" links
+            see_also: Vec::new(),
         })
     }
 

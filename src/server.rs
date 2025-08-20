@@ -463,6 +463,48 @@ impl RustDocsMcpServer {
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
 
+    /// Resolve import statements to concrete symbol source locations (best-effort).
+    #[tool(description = "Resolve import statements (use/import/from) to symbol source locations")]
+    pub async fn resolve_imports(
+        &self,
+        params: Parameters<crate::doc_engine::types::ImportResolutionParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+
+        // Basic validation
+        if p.language.trim().is_empty() {
+            return Err(ErrorData::invalid_params("language cannot be empty", None));
+        }
+        if p.package.trim().is_empty() {
+            return Err(ErrorData::invalid_params("package cannot be empty", None));
+        }
+        if p.import_line.is_none() && p.code_block.is_none() {
+            return Err(ErrorData::invalid_params(
+                "Either import_line or code_block must be provided",
+                None,
+            ));
+        }
+
+        let fut = self.engine.resolve_imports(&p);
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(30), fut)
+            .await
+            .map_err(|_| {
+                ErrorData::internal_error(
+                    "Timeout resolving imports (exceeded 30s)".to_string(),
+                    None,
+                )
+            })?
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to resolve imports: {e}"), None)
+            })?;
+
+        let json_content = serde_json::to_string(&response)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
     /// Search for symbols within a crate
     #[tool(description = "Search for symbols within a crate using full-text search")]
     pub async fn search_symbols(

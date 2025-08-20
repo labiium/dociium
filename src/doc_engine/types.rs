@@ -1,5 +1,6 @@
 //! Type definitions for the documentation engine
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -450,3 +451,97 @@ pub struct EnhancedItemDoc {
     pub quality_score: f32,
     pub completeness_score: f32,
 }
+
+/// ======================================================================
+/// Import Resolution Support
+/// ======================================================================
+/// The status of a single symbol resolution attempt derived from an import
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum ImportResolutionStatus {
+    /// Symbol identified and its source location determined
+    Resolved,
+    /// Import path parsed but symbol not found in candidate modules
+    NotFound,
+    /// Import string could not be parsed
+    ParseError(String),
+    /// Resolution skipped (unsupported language / pattern)
+    Unsupported(String),
+}
+
+/// Information about a single resolved symbol originating from an import statement
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportSymbolLocation {
+    /// The (possibly re-exported) symbol name requested
+    pub symbol: String,
+    /// Fully resolved absolute file path on disk
+    pub file: String,
+    /// 1-based line number for the definition (best-effort heuristic)
+    pub line: u32,
+    /// 1-based column number (best-effort, defaults to 1 if unknown)
+    pub column: u32,
+    /// Optional end line (inclusive) when a span is known
+    pub end_line: Option<u32>,
+    /// Optional end column
+    pub end_column: Option<u32>,
+    /// Inferred kind: e.g. "function", "struct", "class", "trait", "const", etc.
+    pub kind: Option<String>,
+    /// Resolution status
+    pub status: ImportResolutionStatus,
+    /// Optional short note (e.g. heuristic used, fallback taken)
+    pub note: Option<String>,
+}
+
+/// Aggregate result for resolving one raw import statement (or line)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportResolutionResult {
+    /// Language of the import: "rust" | "python" | "node"
+    pub language: String,
+    /// Package / crate name context (for Rust: crate root; for Python/Node: top-level package)
+    pub package: String,
+    /// The raw import statement as provided
+    pub import_statement: String,
+    /// Parsed module path segments (if successfully parsed)
+    pub module_path: Vec<String>,
+    /// Optional explicit symbols requested (e.g. from import x, y)
+    pub requested_symbols: Vec<String>,
+    /// Locations for each resolved symbol (may be empty if unresolved)
+    pub resolved: Vec<ImportSymbolLocation>,
+    /// Diagnostic / informational messages collected during resolution
+    pub diagnostics: Vec<String>,
+}
+
+/// Parameters for a future public API method (DocEngine / MCP tool) to resolve imports.
+/// This is added as a shared type so the server and client can agree on schema.
+///
+/// Expected usage:
+/// - Provide either a single raw import line, or a block of code containing imports.
+/// - The engine will attempt to parse and resolve each.
+///
+/// If both `import_line` and `code_block` are provided, `import_line` takes precedence.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportResolutionParams {
+    /// Language selector ("rust", "python", "node")
+    pub language: String,
+    /// Package / crate name context
+    pub package: String,
+    /// Optional explicit version (Rust); ignored for Python/Node
+    pub version: Option<String>,
+    /// A single import line to resolve
+    pub import_line: Option<String>,
+    /// Multi-line code block containing several imports
+    pub code_block: Option<String>,
+    /// Optional working directory / project root (Python/Node); ignored for Rust
+    pub context_path: Option<String>,
+}
+
+/// Top-level response for resolving (possibly multiple) imports.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportResolutionResponse {
+    pub results: Vec<ImportResolutionResult>,
+    /// Aggregate diagnostics not tied to a single import
+    pub diagnostics: Vec<String>,
+    /// True if at least one symbol resolved successfully
+    pub any_resolved: bool,
+}
+
+// NOTE: Removed outdated placeholder signature comment that caused an orphaned doc comment warning.

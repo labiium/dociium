@@ -326,14 +326,19 @@ impl Cache {
         Ok(CacheStatistics {
             total_entries,
             memory_entries: memory_cache_entries,
-            disk_entries: 0, // TODO: Calculate disk entries
+            // Disk entries currently aggregated as 0 because on-disk item enumeration
+            // is not yet implemented. Update when persistent index is added.
+            disk_entries: 0,
             total_size_bytes,
             memory_size_bytes: memory_cache_size_bytes,
             disk_size_bytes: disk_usage_bytes,
-            hit_rate: 0.0,               // TODO: Implement hit rate tracking
-            miss_rate: 0.0,              // TODO: Implement miss rate tracking
-            evictions: 0,                // TODO: Track evictions
-            oldest_entry_age_hours: 0.0, // TODO: Calculate oldest entry age
+            // Hit/miss metrics and eviction tracking are not yet instrumented; values
+            // are set to 0.0 / 0 until counters are wired into cache operations.
+            hit_rate: 0.0,
+            miss_rate: 0.0,
+            evictions: 0,
+            // Oldest entry age computation pending timestamp sweep logic.
+            oldest_entry_age_hours: 0.0,
         })
     }
 

@@ -7,6 +7,7 @@
 use crate::index_core::{IndexCore, SymbolIndex, TraitImplIndex};
 use anyhow::{Context, Result};
 use lru::LruCache;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{
     num::NonZeroUsize,
@@ -26,7 +27,7 @@ pub mod processors;
 pub mod scraper;
 pub mod types;
 
-pub use types::*;
+use crate::doc_engine::types::*;
 
 /// Helper function to convert between source location types
 fn convert_source_location(
@@ -51,6 +52,7 @@ pub struct DocEngine {
     version_cache: Arc<Mutex<LruCache<String, String>>>,
     python_processor: Arc<processors::python::PythonProcessor>,
     node_processor: Arc<processors::node::NodeProcessor>,
+    rust_processor: Arc<processors::rust::RustProcessor>,
 }
 
 impl DocEngine {
@@ -68,6 +70,7 @@ impl DocEngine {
         let version_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
         let python_processor = Arc::new(processors::python::PythonProcessor);
         let node_processor = Arc::new(processors::node::NodeProcessor);
+        let rust_processor = Arc::new(processors::rust::RustProcessor);
 
         Ok(Self {
             fetcher,
@@ -77,6 +80,7 @@ impl DocEngine {
             version_cache,
             python_processor,
             node_processor,
+            rust_processor,
         })
     }
 
@@ -244,6 +248,847 @@ impl DocEngine {
         docs.search_symbols(query, kinds, limit)
     }
 
+    /// Resolve one or more import statements (Rust/Python/Node) to concrete symbol locations with
+    /// basic caching and re-export traversal.
+    ///
+    /// Supported:
+    /// - Rust: `use path::to::{Type, func};` (handles simple `pub use` re-exports)
+    /// - Python:
+    ///   import pkg.mod
+    ///   from pkg.mod import A, B
+    /// - Node (ESM style only here for simplicity):
+    ///   import X from "pkg/subpath"
+    ///   import {A,B} from "pkg/subpath"
+    ///   import * as NS from "pkg/subpath"
+    ///
+    /// Returns best-effort symbol locations. Re-exports:
+    /// - Rust: scans encountered module files for `pub use ...` lines and recursively resolves.
+    /// - Python: follows `from .sub import Name` style within same package plus `__all__` lists.
+    /// - Node: processes `export {X} from "./file"` and `export * from "./file"`.
+    pub async fn resolve_imports(
+        &self,
+        params: &crate::doc_engine::types::ImportResolutionParams,
+    ) -> Result<crate::doc_engine::types::ImportResolutionResponse> {
+        use crate::doc_engine::types::{
+            ImportResolutionResponse, ImportResolutionResult, ImportResolutionStatus,
+            ImportSymbolLocation,
+        };
+        use std::collections::{HashMap, HashSet};
+
+        // In-memory short-lived cache (per-process) keyed by full import line + language + package.
+        // (Could be promoted to struct field with Mutex if long-lived caching desired.)
+        static CACHE_ONCE: std::sync::OnceLock<
+            std::sync::Mutex<HashMap<String, ImportResolutionResult>>,
+        > = std::sync::OnceLock::new();
+        let cache = CACHE_ONCE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+
+        let mut diagnostics = Vec::new();
+        let mut import_lines: Vec<String> = Vec::new();
+        if let Some(line) = &params.import_line {
+            import_lines.push(line.trim().to_string());
+        } else if let Some(block) = &params.code_block {
+            for l in block.lines() {
+                let t = l.trim();
+                if t.starts_with("use ")
+                    || t.starts_with("import ")
+                    || t.starts_with("from ")
+                    || t.starts_with("export ")
+                {
+                    import_lines.push(t.to_string());
+                }
+            }
+        }
+        if import_lines.is_empty() {
+            diagnostics.push("No import lines detected.".to_string());
+        }
+
+        // Helper closure for cache key
+        let cache_key =
+            |lang: &str, pkg: &str, line: &str| -> String { format!("{lang}::{pkg}::{line}") };
+
+        // Process per language
+        let mut results: Vec<ImportResolutionResult> = Vec::new();
+
+        match params.language.as_str() {
+            "rust" => {
+                // Determine crate root
+                let version = if let Some(v) = &params.version {
+                    v.clone()
+                } else {
+                    crate::doc_engine::finder::find_latest_rust_crate_version(&params.package)?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "No installed versions found for crate '{}'",
+                                params.package
+                            )
+                        })?
+                };
+                let crate_root =
+                    crate::doc_engine::finder::find_rust_crate_path(&params.package, &version)?;
+
+                // Simple re-export index (file -> Vec<(public symbol, target path string)>)
+                let mut reexport_cache: HashMap<std::path::PathBuf, Vec<(String, String)>> =
+                    HashMap::new();
+
+                for raw in import_lines {
+                    let key = cache_key("rust", &params.package, &raw);
+                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                        results.push(cached);
+                        continue;
+                    }
+
+                    let mut resolution = ImportResolutionResult {
+                        language: "rust".to_string(),
+                        package: params.package.clone(),
+                        import_statement: raw.clone(),
+                        module_path: Vec::new(),
+                        requested_symbols: Vec::new(),
+                        resolved: Vec::new(),
+                        diagnostics: Vec::new(),
+                    };
+
+                    // Parse & branch
+                    let line = raw.trim().trim_end_matches(';');
+                    if !line.starts_with("use ") {
+                        resolution
+                            .diagnostics
+                            .push("Not a Rust use statement".to_string());
+                        cache.lock().unwrap().insert(key, resolution.clone());
+                        results.push(resolution);
+                        continue;
+                    }
+                    let body = line.trim_start_matches("use ").trim();
+                    let body_no_alias = body.split(" as ").next().unwrap_or(body).trim();
+
+                    // Expand { ... } groups if present
+                    let mut items: Vec<(Vec<String>, String)> = Vec::new();
+                    if let Some(open) = body_no_alias.find('{') {
+                        if let Some(close) = body_no_alias.rfind('}') {
+                            let base = body_no_alias[..open].trim().trim_end_matches("::");
+                            let base_segments: Vec<String> = base
+                                .split("::")
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                                .collect();
+                            for part in body_no_alias[open + 1..close].split(',') {
+                                let sym = part.trim();
+                                if sym.is_empty() {
+                                    continue;
+                                }
+                                items.push((base_segments.clone(), sym.to_string()));
+                            }
+                        } else {
+                            resolution
+                                .diagnostics
+                                .push("Mismatched braces in use statement".into());
+                        }
+                    } else {
+                        let segs: Vec<String> = body_no_alias
+                            .split("::")
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .collect();
+                        if segs.is_empty() {
+                            resolution.diagnostics.push("Empty path".into());
+                        } else {
+                            let (modules, last) = segs.split_at(segs.len() - 1);
+                            items.push((modules.to_vec(), last[0].clone()));
+                        }
+                    }
+
+                    // Resolve each item
+                    for (module_segments, symbol) in items {
+                        resolution.requested_symbols.push(symbol.clone());
+                        let (file_path_opt, _) =
+                            Self::resolve_rust_module_file(&crate_root, &module_segments);
+                        if let Some(file_path) = file_path_opt {
+                            // gather symbol + re-export traversal
+                            let mut found_any = false;
+                            let mut visited_files = HashSet::new();
+                            let mut queue: Vec<String> = vec![symbol.clone()];
+                            while let Some(sym) = queue.pop() {
+                                // direct search
+                                let locs = Self::search_rust_symbols_in_file(
+                                    &file_path,
+                                    std::slice::from_ref(&sym),
+                                )?;
+                                if !locs.is_empty() {
+                                    for (s, line_no, kind) in locs {
+                                        found_any = true;
+                                        resolution.resolved.push(ImportSymbolLocation {
+                                            symbol: s,
+                                            file: file_path.to_string_lossy().into(),
+                                            line: line_no,
+                                            column: 1,
+                                            end_line: None,
+                                            end_column: None,
+                                            kind,
+                                            status: ImportResolutionStatus::Resolved,
+                                            note: None,
+                                        });
+                                    }
+                                }
+                                // re-export scan
+                                if !visited_files.insert(file_path.clone()) {
+                                    continue;
+                                }
+                                let reexports =
+                                    reexport_cache.entry(file_path.clone()).or_insert_with(|| {
+                                        Self::scan_rust_reexports(&file_path)
+                                            .unwrap_or_else(|_| Vec::new())
+                                    });
+                                for (pub_sym, target_path) in reexports.iter() {
+                                    if pub_sym == &sym {
+                                        // Attempt to resolve target_path recursively
+                                        // naive: treat as full path path::to::Item
+                                        let segs: Vec<String> = target_path
+                                            .split("::")
+                                            .filter(|s| !s.is_empty())
+                                            .map(|s| s.to_string())
+                                            .collect();
+                                        if !segs.is_empty() {
+                                            let (mods, last) = segs.split_at(segs.len() - 1);
+                                            let (file_candidate, _) =
+                                                Self::resolve_rust_module_file(&crate_root, mods);
+                                            if let Some(fc) = file_candidate {
+                                                queue.push(last[0].clone());
+                                                if fc != file_path {
+                                                    let locs2 = Self::search_rust_symbols_in_file(
+                                                        &fc,
+                                                        std::slice::from_ref(&last[0]),
+                                                    )
+                                                    .unwrap_or_default();
+                                                    for (s2, l2, k2) in locs2 {
+                                                        found_any = true;
+                                                        resolution.resolved.push(ImportSymbolLocation {
+                                                            symbol: s2,
+                                                            file: fc.to_string_lossy().into(),
+                                                            line: l2,
+                                                            column: 1,
+                                                            end_line: None,
+                                                            end_column: None,
+                                                            kind: k2,
+                                                            status: ImportResolutionStatus::Resolved,
+                                                            note: Some("Resolved via re-export".into()),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if !found_any {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: symbol.clone(),
+                                    file: file_path.to_string_lossy().into(),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: None,
+                                    status: ImportResolutionStatus::NotFound,
+                                    note: Some("Symbol not found in module or re-exports".into()),
+                                });
+                            }
+                        } else {
+                            resolution.resolved.push(ImportSymbolLocation {
+                                symbol: symbol.clone(),
+                                file: format!("{}/(unresolved module)", crate_root.display()),
+                                line: 1,
+                                column: 1,
+                                end_line: None,
+                                end_column: None,
+                                kind: None,
+                                status: ImportResolutionStatus::NotFound,
+                                note: Some("Module file not found".into()),
+                            });
+                        }
+                    }
+
+                    cache.lock().unwrap().insert(key, resolution.clone());
+                    results.push(resolution);
+                }
+            }
+            "python" => {
+                // Root resolution
+                let package_root =
+                    crate::doc_engine::finder::find_python_package_path(&params.package)?;
+                for raw in import_lines {
+                    let key = cache_key("python", &params.package, &raw);
+                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                        results.push(cached);
+                        continue;
+                    }
+                    let mut resolution = ImportResolutionResult {
+                        language: "python".to_string(),
+                        package: params.package.clone(),
+                        import_statement: raw.clone(),
+                        module_path: Vec::new(),
+                        requested_symbols: Vec::new(),
+                        resolved: Vec::new(),
+                        diagnostics: Vec::new(),
+                    };
+                    // Patterns:
+                    // 1) import pkg.sub.mod
+                    // 2) from pkg.sub.mod import A, B
+                    if raw.starts_with("from ") {
+                        // from X import A, B
+                        if let Some(rest) = raw.strip_prefix("from ") {
+                            if let Some((module_part, import_part)) = rest.split_once(" import ") {
+                                let symbols: Vec<String> = import_part
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                                let mod_segs: Vec<&str> =
+                                    module_part.split('.').filter(|s| !s.is_empty()).collect();
+                                resolution.module_path =
+                                    mod_segs.iter().map(|s| s.to_string()).collect();
+                                // Build path
+                                let (file_path, is_pkg) =
+                                    Self::python_module_to_file(&package_root, &mod_segs);
+                                for sym in &symbols {
+                                    resolution.requested_symbols.push(sym.clone());
+                                    if let Some((fp, is_pkg)) =
+                                        file_path.clone().map(|p| (p, is_pkg))
+                                    {
+                                        let loc = Self::search_python_symbol(&fp, sym.as_str())
+                                            .unwrap_or(None);
+                                        if let Some((line, kind)) = loc {
+                                            resolution.resolved.push(ImportSymbolLocation {
+                                                symbol: sym.clone(),
+                                                file: fp.to_string_lossy().into(),
+                                                line,
+                                                column: 1,
+                                                end_line: None,
+                                                end_column: None,
+                                                kind: Some(kind),
+                                                status: ImportResolutionStatus::Resolved,
+                                                note: if is_pkg {
+                                                    Some("__init__ module".into())
+                                                } else {
+                                                    None
+                                                },
+                                            });
+                                        } else {
+                                            resolution.resolved.push(ImportSymbolLocation {
+                                                symbol: sym.clone(),
+                                                file: fp.to_string_lossy().into(),
+                                                line: 1,
+                                                column: 1,
+                                                end_line: None,
+                                                end_column: None,
+                                                kind: None,
+                                                status: ImportResolutionStatus::NotFound,
+                                                note: Some("Symbol not found".into()),
+                                            });
+                                        }
+                                    } else {
+                                        resolution.resolved.push(ImportSymbolLocation {
+                                            symbol: sym.clone(),
+                                            file: format!(
+                                                "{}/(unresolved module)",
+                                                package_root.display()
+                                            ),
+                                            line: 1,
+                                            column: 1,
+                                            end_line: None,
+                                            end_column: None,
+                                            kind: None,
+                                            status: ImportResolutionStatus::NotFound,
+                                            note: Some("Module path not found".into()),
+                                        });
+                                    }
+                                }
+                            } else {
+                                resolution
+                                    .diagnostics
+                                    .push("Malformed 'from ... import ...'".into());
+                            }
+                        }
+                    } else if raw.starts_with("import ") {
+                        // import pkg.mod.sub
+                        if let Some(rest) = raw.strip_prefix("import ") {
+                            let segs: Vec<&str> =
+                                rest.split('.').filter(|s| !s.is_empty()).collect();
+                            resolution.module_path = segs.iter().map(|s| s.to_string()).collect();
+                            // Just resolve file; no specific symbols
+                            let (file_path, _is_pkg) =
+                                Self::python_module_to_file(&package_root, &segs);
+                            if let Some(fp) = file_path {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: segs.last().unwrap().to_string(),
+                                    file: fp.to_string_lossy().into(),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: Some("module".into()),
+                                    status: ImportResolutionStatus::Resolved,
+                                    note: None,
+                                });
+                            } else {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: segs.last().unwrap().to_string(),
+                                    file: format!("{}/(unresolved module)", package_root.display()),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: None,
+                                    status: ImportResolutionStatus::NotFound,
+                                    note: Some("Module path not found".into()),
+                                });
+                            }
+                        }
+                    } else {
+                        resolution
+                            .diagnostics
+                            .push("Unsupported python import form".into());
+                    }
+                    cache.lock().unwrap().insert(key, resolution.clone());
+                    results.push(resolution);
+                }
+            }
+            "node" => {
+                // Determine root (reuse finder)
+                let context_path = params
+                    .context_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let package_root = crate::doc_engine::finder::find_node_package_path(
+                    &params.package,
+                    &context_path,
+                )?;
+                // Precompile regexes once outside the per-line loop (Clippy: regex_creation_in_loops)
+                let import_re = regex::Regex::new(
+                    r#"^import\s+(?P<what>[\s\*\{\}\w,]*?)\s+from\s+["'](?P<mod>[^"']+)["']"#,
+                )
+                .unwrap();
+                let simple_import_re =
+                    regex::Regex::new(r#"^import\s+["'](?P<mod>[^"']+)["'];?"#).unwrap();
+                for raw in import_lines {
+                    let key = cache_key("node", &params.package, &raw);
+                    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+                        results.push(cached);
+                        continue;
+                    }
+                    let mut resolution = ImportResolutionResult {
+                        language: "node".to_string(),
+                        package: params.package.clone(),
+                        import_statement: raw.clone(),
+                        module_path: Vec::new(),
+                        requested_symbols: Vec::new(),
+                        resolved: Vec::new(),
+                        diagnostics: Vec::new(),
+                    };
+                    // Parse ESM style
+                    // import {A,B} from "mod";
+                    // import X from "mod";
+                    // import * as NS from "mod";
+                    // reuse precompiled import_re
+                    let re = &import_re;
+                    if let Some(caps) = re.captures(&raw) {
+                        let module_path: &str = caps.name("mod").unwrap().as_str();
+                        let what_raw = caps.name("what").unwrap().as_str().trim();
+                        let (file_path, is_dir) =
+                            Self::node_module_to_file(&package_root, module_path);
+                        if what_raw.starts_with('{') && what_raw.ends_with('}') {
+                            // Named imports
+                            for sym in what_raw
+                                .trim_start_matches('{')
+                                .trim_end_matches('}')
+                                .split(',')
+                            {
+                                let s = sym.trim();
+                                if s.is_empty() {
+                                    continue;
+                                }
+                                resolution.requested_symbols.push(s.to_string());
+                                if let Some(fp) = file_path.clone() {
+                                    let loc = Self::search_node_symbol(&fp, s).unwrap_or(None);
+                                    if let Some((line, kind)) = loc {
+                                        resolution.resolved.push(ImportSymbolLocation {
+                                            symbol: s.to_string(),
+                                            file: fp.to_string_lossy().into(),
+                                            line,
+                                            column: 1,
+                                            end_line: None,
+                                            end_column: None,
+                                            kind: Some(kind),
+                                            status: ImportResolutionStatus::Resolved,
+                                            note: if is_dir {
+                                                Some("directory index (index.js/ts)".into())
+                                            } else {
+                                                None
+                                            },
+                                        });
+                                    } else {
+                                        resolution.resolved.push(ImportSymbolLocation {
+                                            symbol: s.to_string(),
+                                            file: fp.to_string_lossy().into(),
+                                            line: 1,
+                                            column: 1,
+                                            end_line: None,
+                                            end_column: None,
+                                            kind: None,
+                                            status: ImportResolutionStatus::NotFound,
+                                            note: Some("Symbol not found".into()),
+                                        });
+                                    }
+                                } else {
+                                    resolution.resolved.push(ImportSymbolLocation {
+                                        symbol: s.to_string(),
+                                        file: format!(
+                                            "{}/(unresolved module)",
+                                            package_root.display()
+                                        ),
+                                        line: 1,
+                                        column: 1,
+                                        end_line: None,
+                                        end_column: None,
+                                        kind: None,
+                                        status: ImportResolutionStatus::NotFound,
+                                        note: Some("Module path not found".into()),
+                                    });
+                                }
+                            }
+                        } else if what_raw.starts_with('*') {
+                            // Namespace import, just resolve module
+                            if let Some(fp) = file_path.clone() {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: module_path.to_string(),
+                                    file: fp.to_string_lossy().into(),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: Some("module".into()),
+                                    status: ImportResolutionStatus::Resolved,
+                                    note: Some("namespace import".into()),
+                                });
+                            } else {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: module_path.to_string(),
+                                    file: format!("{}/(unresolved module)", package_root.display()),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: None,
+                                    status: ImportResolutionStatus::NotFound,
+                                    note: Some("Module path not found".into()),
+                                });
+                            }
+                        } else if !what_raw.is_empty() {
+                            // Default import treated as exported name lookup
+                            if let Some(fp) = file_path.clone() {
+                                let loc = Self::search_node_symbol(&fp, what_raw).unwrap_or(None);
+                                if let Some((line, kind)) = loc {
+                                    resolution.resolved.push(ImportSymbolLocation {
+                                        symbol: what_raw.to_string(),
+                                        file: fp.to_string_lossy().into(),
+                                        line,
+                                        column: 1,
+                                        end_line: None,
+                                        end_column: None,
+                                        kind: Some(kind),
+                                        status: ImportResolutionStatus::Resolved,
+                                        note: Some("default import heuristic".into()),
+                                    });
+                                } else {
+                                    resolution.resolved.push(ImportSymbolLocation {
+                                        symbol: what_raw.to_string(),
+                                        file: fp.to_string_lossy().into(),
+                                        line: 1,
+                                        column: 1,
+                                        end_line: None,
+                                        end_column: None,
+                                        kind: None,
+                                        status: ImportResolutionStatus::NotFound,
+                                        note: Some("Symbol not found".into()),
+                                    });
+                                }
+                            }
+                        }
+                    } else if raw.starts_with("import ") {
+                        // Fallback simple: import "module";
+                        let re2 = &simple_import_re;
+                        if let Some(caps) = re2.captures(&raw) {
+                            let module_path = caps.name("mod").unwrap().as_str();
+                            let (file_path, is_dir) =
+                                Self::node_module_to_file(&package_root, module_path);
+                            if let Some(fp) = file_path {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: module_path.to_string(),
+                                    file: fp.to_string_lossy().into(),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: Some("module".into()),
+                                    status: ImportResolutionStatus::Resolved,
+                                    note: if is_dir {
+                                        Some("directory index (index.js/ts)".into())
+                                    } else {
+                                        None
+                                    },
+                                });
+                            } else {
+                                resolution.resolved.push(ImportSymbolLocation {
+                                    symbol: module_path.to_string(),
+                                    file: format!("{}/(unresolved module)", package_root.display()),
+                                    line: 1,
+                                    column: 1,
+                                    end_line: None,
+                                    end_column: None,
+                                    kind: None,
+                                    status: ImportResolutionStatus::NotFound,
+                                    note: Some("Module path not found".into()),
+                                });
+                            }
+                        }
+                    } else {
+                        resolution
+                            .diagnostics
+                            .push("Unsupported Node import form".into());
+                    }
+                    cache.lock().unwrap().insert(key, resolution.clone());
+                    results.push(resolution);
+                }
+            }
+            other => diagnostics.push(format!("Unsupported language '{other}'")),
+        }
+
+        let any_resolved = results.iter().any(|r| {
+            r.resolved
+                .iter()
+                .any(|s| matches!(s.status, ImportResolutionStatus::Resolved))
+        });
+
+        Ok(ImportResolutionResponse {
+            results,
+            diagnostics,
+            any_resolved,
+        })
+    }
+
+    /// Internal helper: resolve Rust module file from segments.
+    fn resolve_rust_module_file(
+        crate_root: &std::path::Path,
+        segments: &[String],
+    ) -> (Option<std::path::PathBuf>, bool) {
+        if segments.is_empty() {
+            let lib_rs = crate_root.join("lib.rs");
+            if lib_rs.is_file() {
+                return (Some(lib_rs), true);
+            }
+        }
+        let mut path = crate_root.to_path_buf();
+        for seg in segments {
+            path = path.join(seg);
+        }
+        let direct_rs = path.with_extension("rs");
+        if direct_rs.is_file() {
+            return (Some(direct_rs), true);
+        }
+        let mod_rs = path.join("mod.rs");
+        if mod_rs.is_file() {
+            return (Some(mod_rs), true);
+        }
+        // Fallback: last existing ancestor
+        let mut ancestor = path.clone();
+        while ancestor != *crate_root {
+            if ancestor.is_file() {
+                return (Some(ancestor), false);
+            }
+            ancestor = ancestor
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| crate_root.to_path_buf());
+        }
+        (None, false)
+    }
+
+    /// Search for given Rust symbols in a file, returning (symbol, line, kind).
+    fn search_rust_symbols_in_file(
+        path: &std::path::Path,
+        symbols: &[String],
+    ) -> Result<Vec<(String, u32, Option<String>)>> {
+        let content = std::fs::read_to_string(path)?;
+        let mut out = Vec::new();
+        for sym in symbols {
+            let pattern = format!(
+                r"(?m)^(?:\s*(?:pub\s+(?:crate\s+)?)?(?:async\s+)?)((fn|struct|enum|trait|type|const|static)\s+{})\b",
+                regex::escape(sym)
+            );
+            if let Ok(re) = Regex::new(&pattern) {
+                if let Some(mat) = re.find(&content) {
+                    let kind_caps = Regex::new(&format!(
+                        r"(fn|struct|enum|trait|type|const|static)\s+{}",
+                        regex::escape(sym)
+                    ))
+                    .unwrap()
+                    .captures(mat.as_str());
+                    let kind = kind_caps
+                        .and_then(|c| c.get(1))
+                        .map(|m| m.as_str().to_string());
+                    let line = content[..mat.start()].lines().count() as u32 + 1;
+                    out.push((sym.clone(), line, kind));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Scan a Rust source file for simple `pub use path::to::Symbol;` re-exports.
+    /// Returns Vec of (public_symbol, target_full_path).
+    fn scan_rust_reexports(file: &std::path::Path) -> Result<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        if let Ok(content) = std::fs::read_to_string(file) {
+            // Pattern: pub use foo::bar::Baz;
+            let re = Regex::new(r"(?m)^\s*pub\s+use\s+([A-Za-z0-9_:]+)::([A-Za-z0-9_]+)\s*;")?;
+            for caps in re.captures_iter(&content) {
+                let base = caps.get(1).unwrap().as_str();
+                let sym = caps.get(2).unwrap().as_str();
+                out.push((sym.to_string(), format!("{base}::{sym}")));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Convert Python module path segments (relative to package root) into a source file.
+    /// Returns (Some(file_path), is_package_init) if resolved.
+    fn python_module_to_file(
+        package_root: &std::path::Path,
+        segments: &[&str],
+    ) -> (Option<std::path::PathBuf>, bool) {
+        if segments.is_empty() {
+            // root package __init__.py
+            let init_py = package_root.join("__init__.py");
+            if init_py.is_file() {
+                return (Some(init_py), true);
+            }
+            return (None, false);
+        }
+        let mut path = package_root.to_path_buf();
+        for s in segments {
+            path = path.join(s);
+        }
+        let file_py = path.with_extension("py");
+        if file_py.is_file() {
+            return (Some(file_py), false);
+        }
+        let init_py = path.join("__init__.py");
+        if init_py.is_file() {
+            return (Some(init_py), true);
+        }
+        (None, false)
+    }
+
+    /// Heuristic Python symbol search: looks for class / def definitions.
+    fn search_python_symbol(file: &std::path::Path, symbol: &str) -> Result<Option<(u32, String)>> {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        let class_re = Regex::new(&format!(r"(?m)^class\s+{}\b", regex::escape(symbol)))?;
+        if let Some(m) = class_re.find(&content) {
+            let line = content[..m.start()].lines().count() as u32 + 1;
+            return Ok(Some((line, "class".into())));
+        }
+        let def_re = Regex::new(&format!(r"(?m)^def\s+{}\b", regex::escape(symbol)))?;
+        if let Some(m) = def_re.find(&content) {
+            let line = content[..m.start()].lines().count() as u32 + 1;
+            return Ok(Some((line, "function".into())));
+        }
+        Ok(None)
+    }
+
+    /// Resolve a Node (ESM) module path to a concrete file (js/ts) or directory index.
+    /// Returns (file_path, is_directory_index).
+    fn node_module_to_file(
+        package_root: &std::path::Path,
+        module_path: &str,
+    ) -> (Option<std::path::PathBuf>, bool) {
+        // Strip possible leading ./ or /
+        let rel = module_path.trim_start_matches("./").trim_start_matches('/');
+        let base = package_root.join(rel);
+        if base.is_file() {
+            return (Some(base), false);
+        }
+        // Try explicit extensions
+        for ext in &["js", "ts", "mjs", "cjs"] {
+            let candidate = base.with_extension(ext);
+            if candidate.is_file() {
+                return (Some(candidate), false);
+            }
+        }
+        // Try directory index
+        if base.is_dir() {
+            for ix in &["index.ts", "index.js", "index.mjs", "index.cjs"] {
+                let candidate = base.join(ix);
+                if candidate.is_file() {
+                    return (Some(candidate), true);
+                }
+            }
+        }
+        (None, false)
+    }
+
+    /// Heuristic Node symbol search for exported entities.
+    fn search_node_symbol(file: &std::path::Path, symbol: &str) -> Result<Option<(u32, String)>> {
+        let content = match std::fs::read_to_string(file) {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        let patterns = vec![
+            (
+                format!(r"(?m)^export\s+class\s+{}\b", regex::escape(symbol)),
+                "class",
+            ),
+            (
+                format!(r"(?m)^export\s+function\s+{}\b", regex::escape(symbol)),
+                "function",
+            ),
+            (
+                format!(r"(?m)^export\s+const\s+{}\b", regex::escape(symbol)),
+                "const",
+            ),
+            (
+                format!(r"(?m)^export\s+let\s+{}\b", regex::escape(symbol)),
+                "var",
+            ),
+            (
+                format!(r"(?m)^export\s+var\s+{}\b", regex::escape(symbol)),
+                "var",
+            ),
+            (
+                format!(r"(?m)^class\s+{}\b", regex::escape(symbol)),
+                "class",
+            ),
+            (
+                format!(r"(?m)^function\s+{}\b", regex::escape(symbol)),
+                "function",
+            ),
+            (
+                format!(r"(?m)^const\s+{}\b", regex::escape(symbol)),
+                "const",
+            ),
+        ];
+        for (pat, kind) in patterns {
+            if let Ok(re) = Regex::new(&pat) {
+                if let Some(m) = re.find(&content) {
+                    let line = content[..m.start()].lines().count() as u32 + 1;
+                    return Ok(Some((line, kind.into())));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Get implementation context from a local environment for various languages.
     pub async fn get_implementation_context(
         &self,
@@ -283,11 +1128,15 @@ impl DocEngine {
                     .await
             }
             "rust" => {
-                // Rust logic is crate-based, not easily adaptable to this model.
-                // Use the existing rust-specific tools instead.
-                anyhow::bail!(
-                    "For Rust, please use crate-specific tools like `get_item_doc` and `source_snippet`."
-                )
+                // New RustProcessor integration: leverage locally downloaded crate sources.
+                self.rust_processor
+                    .get_implementation_context(
+                        package_name,
+                        &context_path,
+                        relative_path,
+                        item_name,
+                    )
+                    .await
             }
             _ => anyhow::bail!(
                 "Unsupported language: '{}'. Supported languages are 'python' and 'node'.",

@@ -108,7 +108,7 @@ impl TraitImplIndex {
                         id: item.path.clone(),
                         name: item.name.clone(),
                         path: item.path.clone(),
-                        generics: Vec::new(), // TODO: Extract from description/signature
+                        generics: Vec::new(), // Generics extraction not implemented in current lightweight index build
                         items: Vec::new(),
                     };
                     self.traits.insert(item.path.clone(), trait_data);
@@ -126,7 +126,7 @@ impl TraitImplIndex {
                     // Process implementation - this is limited by search index data
                     let impl_data = ImplData {
                         id: item.path.clone(),
-                        trait_id: None, // TODO: Extract from description
+                        trait_id: None, // Trait association not derivable from limited search index metadata
                         for_type: item.name.clone(),
                         generics: Vec::new(),
                         where_clause: None,

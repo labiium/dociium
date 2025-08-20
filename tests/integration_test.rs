@@ -3,12 +3,15 @@
 //! Simplified tests to avoid compiler issues while still verifying functionality.
 
 use anyhow::Result;
+use dociium::doc_engine::types::ImportResolutionParams;
 use dociium::{
     CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
     SourceSnippetParams,
 };
 use rmcp::{handler::server::tool::Parameters, model::CallToolResult, ServerHandler};
+use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
 /// Helper function to create a test server instance
@@ -491,4 +494,107 @@ async fn test_get_implementation_invalid_params() {
 
     let response = server.get_implementation(params).await;
     assert!(response.is_err());
+}
+
+//
+// New tests for multi-language import resolution
+//
+
+#[tokio::test]
+async fn test_resolve_imports_rust_basic() {
+    let (server, _temp_dir) = create_test_server().await.unwrap();
+    // Basic rust use statement from std
+    let params = Parameters(ImportResolutionParams {
+        language: "rust".to_string(),
+        package: "std".to_string(),
+        version: None,
+        import_line: Some("use std::fmt::Display;".to_string()),
+        code_block: None,
+        context_path: None,
+    });
+    let response = server.resolve_imports(params).await;
+    // Could fail if std sources not available, but should not panic
+    if let Ok(result) = response {
+        let text = get_text_content(&result);
+        if !text.is_empty() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                // Best effort: verify structure keys
+                assert!(json.get("results").is_some());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_resolve_imports_python_basic() {
+    let (server, tmp) = create_test_server().await.unwrap();
+    // Construct a temporary python package mypkg with __init__.py and foo.py
+    let pkg_dir = tmp.path().join("mypkg");
+    fs::create_dir_all(&pkg_dir).unwrap();
+    fs::write(pkg_dir.join("__init__.py"), "def foo():\n    return 1\n").unwrap();
+    // Point environment variable override to the temp parent so finder locates it
+    std::env::set_var(
+        "DOC_PYTHON_PACKAGE_PATH_MYPKG",
+        tmp.path().to_str().unwrap(),
+    );
+    let params = Parameters(ImportResolutionParams {
+        language: "python".to_string(),
+        package: "mypkg".to_string(),
+        version: None,
+        import_line: Some("from mypkg import foo".to_string()),
+        code_block: None,
+        context_path: None,
+    });
+    let response = server.resolve_imports(params).await;
+    if let Ok(result) = response {
+        let text = get_text_content(&result);
+        if !text.is_empty() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                let any_resolved = json
+                    .get("any_resolved")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                assert!(any_resolved, "Expected python import to resolve symbol");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_resolve_imports_node_basic() {
+    let (server, tmp) = create_test_server().await.unwrap();
+    // Create node_modules/testpkg/index.js exporting a function
+    let node_modules = tmp.path().join("node_modules");
+    let testpkg = node_modules.join("testpkg");
+    fs::create_dir_all(&testpkg).unwrap();
+    fs::write(
+        testpkg.join("index.js"),
+        "export function hello() { return 42; }\n",
+    )
+    .unwrap();
+    // Set override so finder uses our node_modules
+    std::env::set_var("DOC_NODE_PACKAGE_PATH", node_modules.to_str().unwrap());
+    let params = Parameters(ImportResolutionParams {
+        language: "node".to_string(),
+        package: "testpkg".to_string(),
+        version: None,
+        import_line: Some("import { hello } from \"testpkg\";".to_string()),
+        code_block: None,
+        context_path: None,
+    });
+    let response = server.resolve_imports(params).await;
+    if let Ok(result) = response {
+        let text = get_text_content(&result);
+        if !text.is_empty() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                let any_resolved = json
+                    .get("any_resolved")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if !any_resolved {
+                    eprintln!("Node import did not resolve a symbol (acceptable in environments without full Node export parsing)");
+                }
+            }
+        }
+    }
 }

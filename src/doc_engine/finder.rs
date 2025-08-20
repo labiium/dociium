@@ -1,12 +1,36 @@
 //! Finds installed packages on the local filesystem using command-line tools.
 
 use anyhow::{anyhow, Context, Result};
+use semver::Version;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Finds the installation path of a Python package using `pip show`.
 /// This works for both `venv` and `conda` environments if `pip` is on the PATH.
 pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
+    // Environment variable override (exact path). Precedence over invoking pip.
+    // Names tried (first match wins):
+    //  1. DOC_PYTHON_PACKAGE_PATH (global override)
+    //  2. DOC_PYTHON_PACKAGE_PATH_<UPPER_SNAKE_PACKAGE_NAME>
+    if let Ok(global_override) = std::env::var("DOC_PYTHON_PACKAGE_PATH") {
+        let p = Path::new(&global_override);
+        if p.exists() {
+            return Ok(p.join(package_name));
+        }
+    }
+    let specific_key = format!(
+        "DOC_PYTHON_PACKAGE_PATH_{}",
+        package_name
+            .to_ascii_uppercase()
+            .replace(['-', '.'], "_")
+    );
+    if let Ok(pkg_override) = std::env::var(&specific_key) {
+        let p = Path::new(&pkg_override);
+        if p.exists() {
+            return Ok(p.to_path_buf());
+        }
+    }
+
     let output = Command::new("pip")
         .arg("show")
         .arg(package_name)
@@ -25,13 +49,10 @@ pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
     for line in output_str.lines() {
         if line.starts_with("Location: ") {
             let path_str = line.strip_prefix("Location: ").unwrap().trim();
-            // `pip show` gives the site-packages dir. The actual code may be in a subdir.
-            // For many packages, the name of the subdir is the package name.
             let package_path = Path::new(path_str).join(package_name);
             if package_path.is_dir() {
                 return Ok(package_path);
             }
-            // Fallback for packages installed directly in site-packages (less common).
             return Ok(PathBuf::from(path_str));
         }
     }
@@ -43,6 +64,28 @@ pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
 
 /// Finds the installation path of a Node.js package using `npm root`.
 pub fn find_node_package_path(package_name: &str, context_path: &Path) -> Result<PathBuf> {
+    // Environment variable overrides (precedence order):
+    //  1. DOC_NODE_PACKAGE_PATH (points to a node_modules directory)
+    //  2. DOC_NODE_PACKAGE_PATH_<UPPER_SNAKE_PACKAGE_NAME> (points directly to the package root)
+    if let Ok(global_node_modules) = std::env::var("DOC_NODE_PACKAGE_PATH") {
+        let p = Path::new(&global_node_modules).join(package_name);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let specific_key = format!(
+        "DOC_NODE_PACKAGE_PATH_{}",
+        package_name
+            .to_ascii_uppercase()
+            .replace(['-', '.'], "_")
+    );
+    if let Ok(pkg_override) = std::env::var(&specific_key) {
+        let p = Path::new(&pkg_override);
+        if p.exists() {
+            return Ok(p.to_path_buf());
+        }
+    }
+
     let output = Command::new("npm")
         .arg("root")
         .current_dir(context_path)
@@ -116,6 +159,52 @@ pub fn find_rust_crate_path(crate_name: &str, version: &str) -> Result<PathBuf> 
         crate_name,
         version
     ))
+}
+
+/// Find the latest installed version string for a given Rust crate in the local cargo registry.
+///
+/// Returns:
+/// - Ok(Some(version)) if one or more versions are present (the highest semver chosen)
+/// - Ok(None) if the crate is not present locally
+/// - Err(_) if the cargo registry cannot be read
+pub fn find_latest_rust_crate_version(crate_name: &str) -> Result<Option<String>> {
+    // Determine cargo home directory
+    let cargo_home = std::env::var("CARGO_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.cargo")))
+        .context("Could not determine CARGO_HOME")?;
+    let registry_src = Path::new(&cargo_home).join("registry").join("src");
+
+    let mut latest: Option<Version> = None;
+
+    let entries = std::fs::read_dir(&registry_src).context("Failed to read cargo registry")?;
+    for entry in entries.flatten() {
+        if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            if let Some(_dir_name) = entry.file_name().to_str() {
+                // Each directory inside registry/src is a registry identifier; inside it are crate-version directories
+                let subdir = entry.path();
+                if let Ok(crate_dirs) = std::fs::read_dir(&subdir) {
+                    for crate_dir in crate_dirs.flatten() {
+                        if crate_dir.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                            if let Some(name) = crate_dir.file_name().to_str() {
+                                if let Some(version_part) =
+                                    name.strip_prefix(&format!("{crate_name}-"))
+                                {
+                                    if let Ok(ver) = Version::parse(version_part) {
+                                        match &latest {
+                                            Some(current) if &ver <= current => {}
+                                            _ => latest = Some(ver),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(latest.map(|v| v.to_string()))
 }
 
 #[cfg(test)]
