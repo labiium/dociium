@@ -11,7 +11,7 @@ use dociium::{
 };
 use rmcp::{handler::server::tool::Parameters, model::CallToolResult, ServerHandler};
 use std::fs;
-use std::path::Path;
+
 use tempfile::TempDir;
 
 /// Helper function to create a test server instance

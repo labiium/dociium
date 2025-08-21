@@ -204,7 +204,6 @@ fn test_release_build_size() {
 
     assert!(
         binary_path.exists(),
-        "Release binary should exist at {:?}",
-        binary_path
+        "Release binary should exist at {binary_path:?}"
     );
 }

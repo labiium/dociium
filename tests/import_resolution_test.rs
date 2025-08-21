@@ -336,9 +336,7 @@ async fn caching_effectiveness_same_request_twice() -> Result<()> {
     // Not asserting strict timing, but second call should not be grossly slower.
     assert!(
         dur2 <= dur1 * 5,
-        "Second (cached) resolution unexpectedly much slower: {:?} vs {:?}",
-        dur2,
-        dur1
+        "Second (cached) resolution unexpectedly much slower: {dur2:?} vs {dur1:?}"
     );
     Ok(())
 }

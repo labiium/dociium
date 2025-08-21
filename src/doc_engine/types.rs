@@ -149,28 +149,6 @@ pub struct SymbolSearchResult {
     pub module_path: String,
 }
 
-/// Scraper configuration for docs.rs fetching
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScraperConfig {
-    pub base_url: String,
-    pub timeout_seconds: u64,
-    pub max_retries: u32,
-    pub retry_delay_ms: u64,
-    pub user_agent: String,
-}
-
-impl Default for ScraperConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "https://docs.rs".to_string(),
-            timeout_seconds: 30,
-            max_retries: 3,
-            retry_delay_ms: 500,
-            user_agent: "dociium-scraper/1.0".to_string(),
-        }
-    }
-}
-
 /// Cache entry metadata for tracking cached items
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {

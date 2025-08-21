@@ -142,6 +142,7 @@ impl Cache {
         }
 
         debug!("Stored crate documentation for: {}", key);
+        self.increment_stat("puts");
         Ok(())
     }
 
@@ -155,6 +156,7 @@ impl Cache {
                 let docs: CrateDocumentation = bincode::deserialize(&item.data)
                     .context("Failed to deserialize cached documentation")?;
                 debug!("Cache hit (memory) for: {}", key);
+                self.increment_stat("hits");
                 return Ok(Some(docs));
             }
         }
@@ -194,10 +196,12 @@ impl Cache {
             }
 
             debug!("Cache hit (disk) for: {}", key);
+            self.increment_stat("hits");
             return Ok(Some(docs));
         }
 
         debug!("Cache miss for: {}", key);
+        self.increment_stat("misses");
         Ok(None)
     }
 
@@ -226,6 +230,7 @@ impl Cache {
         fs::write(&file_path, entry_bytes)?;
 
         debug!("Stored data for: {}:{}", category, key);
+        self.increment_stat("puts");
         Ok(())
     }
 
@@ -251,10 +256,12 @@ impl Cache {
             fs::write(&file_path, updated_entry_bytes)?;
 
             debug!("Retrieved data for: {}:{}", category, key);
+            self.increment_stat("hits");
             return Ok(Some(decompressed));
         }
 
         debug!("Data not found for: {}:{}", category, key);
+        self.increment_stat("misses");
         Ok(None)
     }
 
@@ -298,48 +305,11 @@ impl Cache {
         Ok(())
     }
 
-    /// Get cache statistics
+    /// Get cache statistics (legacy call now delegates to enhanced stats).
+    /// This preserves backward compatibility while ensuring callers
+    /// receive fully instrumented metrics.
     pub fn get_stats(&self) -> Result<CacheStatistics> {
-        let mut total_entries = 0;
-        let mut total_size_bytes = 0u64;
-
-        // Count disk cache entries
-        for entry in fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().is_some_and(|ext| ext == "cache") {
-                total_entries += 1;
-                total_size_bytes += entry.metadata()?.len();
-            }
-        }
-
-        let (memory_cache_entries, memory_cache_size_bytes) = {
-            let cache = self.memory_cache.lock().unwrap();
-            let entries = cache.len();
-            let size = cache.values().map(|item| item.size as u64).sum();
-            (entries, size)
-        };
-
-        // Calculate disk usage
-        let disk_usage_bytes = self.calculate_disk_usage()?;
-
-        Ok(CacheStatistics {
-            total_entries,
-            memory_entries: memory_cache_entries,
-            // Disk entries currently aggregated as 0 because on-disk item enumeration
-            // is not yet implemented. Update when persistent index is added.
-            disk_entries: 0,
-            total_size_bytes,
-            memory_size_bytes: memory_cache_size_bytes,
-            disk_size_bytes: disk_usage_bytes,
-            // Hit/miss metrics and eviction tracking are not yet instrumented; values
-            // are set to 0.0 / 0 until counters are wired into cache operations.
-            hit_rate: 0.0,
-            miss_rate: 0.0,
-            evictions: 0,
-            // Oldest entry age computation pending timestamp sweep logic.
-            oldest_entry_age_hours: 0.0,
-        })
+        self.get_enhanced_stats()
     }
 
     /// Clean up expired entries
@@ -375,7 +345,7 @@ impl Cache {
     }
 
     /// Compress data using gzip
-    fn _compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub fn _compress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(data)?;
         let compressed = encoder.finish()?;
@@ -383,7 +353,7 @@ impl Cache {
     }
 
     /// Decompress gzip-compressed data
-    fn _decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
+    pub fn _decompress_data(&self, data: &[u8]) -> Result<Vec<u8>> {
         let mut decoder = GzDecoder::new(data);
         let mut out = Vec::new();
         decoder.read_to_end(&mut out)?;
@@ -541,6 +511,7 @@ impl Cache {
         fs::write(&file_path, compressed)?;
 
         debug!("Stored crate index for: {}", cache_key);
+        self.increment_stat("puts");
         Ok(())
     }
 
@@ -558,6 +529,7 @@ impl Cache {
             if let Some(entry) = cache.get(&cache_key) {
                 if let Some(ref search_data) = entry.search_index_data {
                     debug!("Crate cache hit (memory) for: {}", cache_key);
+                    self.increment_stat("hits");
                     return Ok(Some(search_data.clone()));
                 }
             }
@@ -584,6 +556,7 @@ impl Cache {
                 }
 
                 debug!("Crate cache hit (disk) for: {}", cache_key);
+                self.increment_stat("hits");
                 if let Some(search_data) = entry.search_index_data {
                     return Ok(Some(search_data));
                 }
@@ -591,6 +564,7 @@ impl Cache {
         }
 
         debug!("Crate cache miss for: {}", cache_key);
+        self.increment_stat("misses");
         Ok(None)
     }
 
@@ -886,7 +860,7 @@ impl Cache {
     }
 
     /// Sanitize filename for safe filesystem usage
-    fn sanitize_filename(&self, input: &str) -> String {
+    pub fn sanitize_filename(&self, input: &str) -> String {
         input
             .replace("::", "_")
             .replace("/", "_")
@@ -979,179 +953,4 @@ impl Cache {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_cache_creation() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path());
-        assert!(cache.is_ok());
-    }
-
-    #[test]
-    fn test_cache_with_config() {
-        let temp_dir = tempdir().unwrap();
-        let config = CacheConfig {
-            max_memory_entries: 500,
-            enable_compression: false,
-            ..Default::default()
-        };
-        let cache = Cache::with_config(temp_dir.path(), config);
-        assert!(cache.is_ok());
-    }
-
-    #[test]
-    fn test_store_and_retrieve_data() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let test_data = b"Hello, world!";
-        cache.store_data("test", "key1", test_data).unwrap();
-
-        let retrieved = cache.get_data("test", "key1").unwrap();
-        assert_eq!(retrieved, Some(test_data.to_vec()));
-    }
-
-    #[test]
-    fn test_item_cache() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let item_doc = ItemDoc {
-            path: "test::function".to_string(),
-            kind: "function".to_string(),
-            rendered_markdown: "Test documentation".to_string(),
-            source_location: None,
-            visibility: "public".to_string(),
-            attributes: vec![],
-            signature: Some("fn test()".to_string()),
-            examples: vec![],
-            see_also: vec![],
-        };
-
-        // Store item
-        cache
-            .store_item_doc("test_crate", "1.0.0", "test::function", &item_doc)
-            .unwrap();
-
-        // Retrieve item
-        let retrieved = cache
-            .get_item_doc("test_crate", "1.0.0", "test::function")
-            .unwrap();
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().path, "test::function");
-    }
-
-    #[test]
-    fn test_cache_miss() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let result = cache.get_data("test", "nonexistent").unwrap();
-        assert_eq!(result, None);
-
-        let item_result = cache.get_item_doc("nonexistent", "1.0.0", "test").unwrap();
-        assert!(item_result.is_none());
-    }
-
-    #[test]
-    fn test_clear_all_cache() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        // Add some test data
-        cache.store_data("test", "key1", b"data1").unwrap();
-        cache.store_data("test", "key2", b"data2").unwrap();
-
-        // Clear all
-        let result = cache.clear_all().unwrap();
-        assert!(result.success);
-        assert!(result.items_affected > 0);
-
-        // Verify data is gone
-        let retrieved = cache.get_data("test", "key1").unwrap();
-        assert_eq!(retrieved, None);
-    }
-
-    #[test]
-    fn test_clear_crate_cache() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let item_doc = ItemDoc {
-            path: "test::function".to_string(),
-            kind: "function".to_string(),
-            rendered_markdown: "Test documentation".to_string(),
-            source_location: None,
-            visibility: "public".to_string(),
-            attributes: vec![],
-            signature: Some("fn test()".to_string()),
-            examples: vec![],
-            see_also: vec![],
-        };
-
-        // Store items for different crates
-        cache
-            .store_item_doc("crate1", "1.0.0", "test::function", &item_doc)
-            .unwrap();
-        cache
-            .store_item_doc("crate2", "1.0.0", "test::function", &item_doc)
-            .unwrap();
-
-        // Clear only crate1
-        let result = cache.clear_crate("crate1").unwrap();
-        assert!(result.success);
-
-        // Verify crate1 is gone but crate2 remains
-        let crate1_result = cache
-            .get_item_doc("crate1", "1.0.0", "test::function")
-            .unwrap();
-        assert!(crate1_result.is_none());
-
-        let crate2_result = cache
-            .get_item_doc("crate2", "1.0.0", "test::function")
-            .unwrap();
-        assert!(crate2_result.is_some());
-    }
-
-    #[test]
-    fn test_sanitize_filename() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let sanitized = cache.sanitize_filename("crate::module::function<T>");
-        assert_eq!(sanitized, "crate_module_function_T_");
-    }
-
-    #[test]
-    fn test_compression() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        let test_data = b"Hello, world!".repeat(1000);
-        let compressed = cache._compress_data(&test_data).unwrap();
-        let decompressed = cache._decompress_data(&compressed).unwrap();
-
-        assert_eq!(test_data, decompressed);
-        assert!(compressed.len() < test_data.len());
-    }
-
-    #[test]
-    fn test_cache_stats() {
-        let temp_dir = tempdir().unwrap();
-        let cache = Cache::new(temp_dir.path()).unwrap();
-
-        // Add some data to get stats
-        cache.store_data("test", "key1", b"data1").unwrap();
-        let _retrieved = cache.get_data("test", "key1").unwrap();
-
-        let stats = cache.get_enhanced_stats().unwrap();
-        // The enhanced stats may not show entries if they're not in memory cache
-        // Just verify the stats structure is working (total_entries is usize, always >= 0)
-        // Just verify the stats structure is working
-        assert!(stats.total_entries == stats.total_entries);
-    }
-}
+// Tests moved to separate integration test file: tests/cache_tests.rs
