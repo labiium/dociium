@@ -608,7 +608,7 @@ impl DocEngine {
                     }
 
                     cache_mutex.lock().unwrap().insert(
-                        "python",
+                        "rust",
                         &params.package,
                         &raw,
                         resolution.clone(),
@@ -758,7 +758,7 @@ impl DocEngine {
                             .push("Unsupported python import form".into());
                     }
                     cache_mutex.lock().unwrap().insert(
-                        "node",
+                        "python",
                         &params.package,
                         &raw,
                         resolution.clone(),
@@ -975,7 +975,7 @@ impl DocEngine {
                             .push("Unsupported Node import form".into());
                     }
                     cache_mutex.lock().unwrap().insert(
-                        "rust",
+                        "node",
                         &params.package,
                         &raw,
                         resolution.clone(),

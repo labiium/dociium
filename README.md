@@ -93,7 +93,7 @@ Set custom cache directory:
 export RDOCS_CACHE_DIR=/path/to/cache
 ```
 
-Default cache: `~/.cache/rdocs-mcp` (Linux/Mac) or `%APPDATA%\rdocs-mcp` (Windows)
+Default cache: `~/.cache/dociium` (Linux/macOS) or `%LOCALAPPDATA%\\dociium` (Windows). Override via `--cache-dir` or `RDOCS_CACHE_DIR`.
 
 ## Troubleshooting
 
@@ -103,7 +103,7 @@ Default cache: `~/.cache/rdocs-mcp` (Linux/Mac) or `%APPDATA%\rdocs-mcp` (Window
 
 **Cache issues?**
 ```bash
-rm -rf ~/.cache/rdocs-mcp  # Clear cache and retry
+rm -rf ~/.cache/dociium  # Clear cache and retry (or set RDOCS_CACHE_DIR)
 ```
 
 **Need help?**

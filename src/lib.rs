@@ -17,3 +17,24 @@ pub mod doc_engine;
 pub mod index_core;
 pub mod server;
 pub mod shared_types;
+
+#[allow(dead_code)]
+fn _ensure_shared_types_linked() {
+    // Touch shared canonical types so they are never considered "truly" unused during
+    // incremental builds or by overly aggressive static analysis phases.
+    use crate::shared_types::{
+        ImplItem, ItemDoc, SearchIndexData, SearchIndexItem, SourceLocation, SourceSnippet,
+        SymbolSearchResult, TraitImpl, TypeImpl,
+    };
+    let _ = (
+        std::any::type_name::<SourceLocation>(),
+        std::any::type_name::<ItemDoc>(),
+        std::any::type_name::<ImplItem>(),
+        std::any::type_name::<TraitImpl>(),
+        std::any::type_name::<TypeImpl>(),
+        std::any::type_name::<SearchIndexItem>(),
+        std::any::type_name::<SearchIndexData>(),
+        std::any::type_name::<SymbolSearchResult>(),
+        std::any::type_name::<SourceSnippet>(),
+    );
+}

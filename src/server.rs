@@ -564,7 +564,30 @@ impl RustDocsMcpServer {
         })?
         .map_err(|e| ErrorData::internal_error(format!("Failed to search symbols: {e}"), None))?;
 
-        let json_content = serde_json::to_string(&results)
+        // Convert engine (legacy) SymbolSearchResult into shared_types canonical form
+        let shared_results: Vec<crate::shared_types::SymbolSearchResult> = results
+            .into_iter()
+            .map(|r| crate::shared_types::SymbolSearchResult {
+                path: r.path,
+                kind: r.kind,
+                score: r.score,
+                doc_summary: r.doc_summary,
+                source_location: r
+                    .source_location
+                    .map(|sl| crate::shared_types::SourceLocation {
+                        file: sl.file,
+                        line: sl.line,
+                        column: sl.column,
+                        end_line: sl.end_line,
+                        end_column: sl.end_column,
+                    }),
+                visibility: r.visibility,
+                signature: r.signature,
+                module_path: r.module_path,
+            })
+            .collect();
+
+        let json_content = serde_json::to_string(&shared_results)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
