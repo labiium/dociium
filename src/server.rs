@@ -23,7 +23,7 @@ pub struct RustDocsMcpServer {
 }
 
 impl RustDocsMcpServer {
-    pub async fn new(cache_dir: &str) -> Result<Self> {
+    pub async fn new(cache_dir: impl AsRef<std::path::Path>) -> Result<Self> {
         let engine = Arc::new(DocEngine::new(cache_dir).await?);
 
         Ok(Self {
@@ -386,6 +386,12 @@ impl RustDocsMcpServer {
 
         // Default context lines if not provided
         let context = context_lines.unwrap_or(5);
+        if context > 100 {
+            return Err(ErrorData::invalid_params(
+                "context_lines too large (max 100)",
+                None,
+            ));
+        }
 
         let snippet = tokio::time::timeout(
             std::time::Duration::from_secs(30),

@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
         cache_dir.display()
     );
 
-    let server = RustDocsMcpServer::new(cache_dir.to_str().unwrap()).await?;
+    let server = RustDocsMcpServer::new(&cache_dir).await?;
     tracing::info!("MCP server initialized; awaiting stdio transport messages");
 
     let service = server.serve(stdio()).await?;
