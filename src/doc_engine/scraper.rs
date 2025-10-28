@@ -7,7 +7,6 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use scraper::{Html, Selector};
 
-
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 

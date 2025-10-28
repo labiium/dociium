@@ -6,7 +6,7 @@
 pub use crate::server::{
     CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
-    SourceSnippetParams,
+    SemanticSearchParams, SourceSnippetParams,
 };
 
 // Re-export commonly used dependencies for tests
@@ -23,8 +23,8 @@ fn _ensure_shared_types_linked() {
     // Touch shared canonical types so they are never considered "truly" unused during
     // incremental builds or by overly aggressive static analysis phases.
     use crate::shared_types::{
-        ImplItem, ItemDoc, SearchIndexData, SearchIndexItem, SourceLocation, SourceSnippet,
-        SymbolSearchResult, TraitImpl, TypeImpl,
+        ImplItem, ItemDoc, SearchIndexData, SearchIndexItem, SemanticSearchResult, SourceLocation,
+        SourceSnippet, SymbolSearchResult, TraitImpl, TypeImpl,
     };
     let _ = (
         std::any::type_name::<SourceLocation>(),
@@ -36,5 +36,6 @@ fn _ensure_shared_types_linked() {
         std::any::type_name::<SearchIndexData>(),
         std::any::type_name::<SymbolSearchResult>(),
         std::any::type_name::<SourceSnippet>(),
+        std::any::type_name::<SemanticSearchResult>(),
     );
 }

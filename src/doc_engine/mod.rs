@@ -4,7 +4,10 @@
 //! build rustdoc JSON, and provide a high-level API for querying documentation.
 //! It also supports fetching source code from local environments for Python and Node.js.
 
-use crate::index_core::{IndexCore, SymbolIndex, TraitImplIndex};
+use crate::{
+    doc_engine::python_semantic::PythonSemanticIndex,
+    index_core::{IndexCore, SymbolIndex, TraitImplIndex},
+};
 use anyhow::{Context, Result};
 use lru::LruCache;
 use regex::Regex;
@@ -24,10 +27,12 @@ pub mod fetcher;
 pub mod finder;
 pub mod local;
 pub mod processors;
+pub mod python_semantic;
 pub mod scraper;
 pub mod types;
 
 use crate::doc_engine::types::*;
+use crate::shared_types::SemanticSearchResult;
 
 /// Helper function to convert between source location types
 fn convert_source_location(
@@ -50,6 +55,7 @@ pub struct DocEngine {
     index: Arc<IndexCore>,
     memory_cache: Arc<Mutex<LruCache<String, Arc<CrateDocumentation>>>>,
     version_cache: Arc<Mutex<LruCache<String, String>>>,
+    python_semantic_cache: Arc<Mutex<LruCache<String, Arc<PythonSemanticIndex>>>>,
     python_processor: Arc<processors::python::PythonProcessor>,
     node_processor: Arc<processors::node::NodeProcessor>,
     rust_processor: Arc<processors::rust::RustProcessor>,
@@ -68,6 +74,8 @@ impl DocEngine {
         let index = Arc::new(IndexCore::new(cache_dir.join("index"))?);
         let memory_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap())));
         let version_cache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
+        let python_semantic_cache =
+            Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(32).unwrap())));
         let python_processor = Arc::new(processors::python::PythonProcessor);
         let node_processor = Arc::new(processors::node::NodeProcessor);
         let rust_processor = Arc::new(processors::rust::RustProcessor);
@@ -78,6 +86,7 @@ impl DocEngine {
             index,
             memory_cache,
             version_cache,
+            python_semantic_cache,
             python_processor,
             node_processor,
             rust_processor,
@@ -101,104 +110,119 @@ impl DocEngine {
         path: &str,
         version: Option<&str>,
     ) -> Result<ItemDoc> {
-        // Check item cache first
+        // Resolve (and possibly cache) the target version first
         let version_str = if let Some(v) = version {
             v.to_string()
         } else {
-            // Check version cache first
-            let cached_version = {
+            // Version LRU (fast path)
+            if let Some(cached) = {
                 let mut cache = self.version_cache.lock().await;
                 cache.get(crate_name).cloned()
-            };
-
-            if let Some(cached_version) = cached_version {
-                info!(
-                    "Using cached version for {}: {}",
-                    crate_name, cached_version
-                );
-                cached_version
+            } {
+                info!("Using cached version for {}: {}", crate_name, cached);
+                cached
             } else {
                 info!("Fetching latest version for crate: {}", crate_name);
-                let version = tokio::time::timeout(
+                let latest = tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     self.fetcher.get_latest_version_string(crate_name),
                 )
                 .await
                 .context("Timeout getting latest version")?
                 .context("Failed to get latest version")?;
-
-                info!("Got latest version for {}: {}", crate_name, version);
-
-                // Cache the version for future use with separate scope
                 {
                     let mut cache = self.version_cache.lock().await;
-                    cache.put(crate_name.to_string(), version.clone());
+                    cache.put(crate_name.to_string(), latest.clone());
                 }
-                info!("Cached version {} for {}", version, crate_name);
-                version
+                info!("Cached version {} for {}", latest, crate_name);
+                latest
             }
         };
 
         info!(
-            "Checkpoint 1: Got version {} for {}",
+            "Checkpoint 1: Resolved version {} for {}",
             version_str, crate_name
         );
-
         info!(
-            "Checkpoint 2: About to check cache for {}::{}",
+            "Checkpoint 2: Checking item doc cache for {}::{}",
             crate_name, path
         );
 
+        // Item-level cache (covers both local + remote fetched results)
         if let Some(cached_item) = self.cache.get_item_doc(crate_name, &version_str, path)? {
-            info!("Found cached item doc for {}::{}", crate_name, path);
+            info!(
+                "Cache hit for item doc {}::{} (v {})",
+                crate_name, path, version_str
+            );
             return Ok(cached_item);
         }
 
         info!(
-            "Checkpoint 3: Starting to fetch docs for {}@{}: {}",
+            "Checkpoint 3: Attempting local source doc extraction for {}@{}: {}",
             crate_name, version_str, path
         );
 
-        // Fetch documentation from locally downloaded source files
+        // Attempt local extraction first (fast path when sources are present).
         let crate_name_owned = crate_name.to_string();
         let path_owned = path.to_string();
         let version_owned = version_str.clone();
+        let local_start = std::time::Instant::now();
 
-        let fetch_start = std::time::Instant::now();
-        let item_doc = tokio::task::spawn_blocking(move || {
+        let local_attempt = tokio::task::spawn_blocking(move || {
             local::fetch_local_item_doc(&crate_name_owned, &version_owned, &path_owned)
         })
         .await
-        .map_err(|e| {
-            warn!(
-                "Join error while fetching docs for {}::{}: {}",
-                crate_name, path, e
-            );
-            anyhow::anyhow!("Failed to join blocking task")
-        })?
-        .map_err(|e| {
-            warn!(
-                "Local doc fetch error after {:?} for {}::{}: {}",
-                fetch_start.elapsed(),
-                crate_name,
-                path,
-                e
-            );
-            anyhow::anyhow!("Failed to fetch item documentation: {}", e)
-        })?;
+        .map_err(|e| anyhow::anyhow!("Join error in local doc fetch: {e}"))
+        .and_then(|inner| inner);
+
+        match local_attempt {
+            Ok(item_doc) => {
+                info!(
+                    "Local doc fetch succeeded for {}::{} in {:?}",
+                    crate_name,
+                    path,
+                    local_start.elapsed()
+                );
+                self.cache
+                    .store_item_doc(crate_name, &version_str, path, &item_doc)?;
+                return Ok(item_doc);
+            }
+            Err(err) => {
+                warn!(
+                    "Local doc fetch failed for {}::{} ({}). Falling back to docs.rs scrape.",
+                    crate_name, path, err
+                );
+            }
+        }
+
+        // Fallback: use docs.rs scraping via search index (ensure_crate_docs fetches index + builds structure)
+        info!(
+            "Checkpoint 4: Fetching / ensuring search index for fallback docs.rs scrape {}@{}",
+            crate_name, version_str
+        );
+        let docs = self
+            .ensure_crate_docs(crate_name, Some(&version_str))
+            .await
+            .context("Failed to ensure crate documentation for fallback")?;
+
+        let scrape_start = std::time::Instant::now();
+        let scraped = docs
+            .get_item_doc(path)
+            .await
+            .with_context(|| format!("docs.rs scrape failed for {}::{}", crate_name, path))?;
 
         info!(
-            "Successfully fetched docs for {}::{} in {:?}",
+            "Fallback docs.rs scrape succeeded for {}::{} in {:?}",
             crate_name,
             path,
-            fetch_start.elapsed()
+            scrape_start.elapsed()
         );
 
-        // Cache the result
+        // Cache scraped result
         self.cache
-            .store_item_doc(crate_name, &version_str, path, &item_doc)?;
+            .store_item_doc(crate_name, &version_str, path, &scraped)?;
 
-        Ok(item_doc)
+        Ok(scraped)
     }
 
     /// List all implementations of a trait
@@ -246,6 +270,120 @@ impl DocEngine {
     ) -> Result<Vec<SymbolSearchResult>> {
         let docs = self.ensure_crate_docs(crate_name, version).await?;
         docs.search_symbols(query, kinds, limit)
+    }
+
+    /// Perform semantic search within a local package (currently Python support).
+    pub async fn semantic_search(
+        &self,
+        language: &str,
+        package_name: &str,
+        query: &str,
+        limit: usize,
+        context_path: Option<&str>,
+    ) -> Result<Vec<SemanticSearchResult>> {
+        match language {
+            "python" => {
+                self.semantic_search_python(package_name, query, limit, context_path)
+                    .await
+            }
+            _ => Err(anyhow::anyhow!(
+                "Semantic search is not implemented for language '{}'",
+                language
+            )),
+        }
+    }
+
+    async fn semantic_search_python(
+        &self,
+        package_name: &str,
+        query: &str,
+        limit: usize,
+        context_path: Option<&str>,
+    ) -> Result<Vec<SemanticSearchResult>> {
+        if query.trim().is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let package_root = if let Some(ctx) = context_path {
+            let candidate = Self::find_local_python_package(Path::new(ctx), package_name);
+            if let Some(path) = candidate {
+                path
+            } else {
+                self.find_python_package_via_finder(package_name).await?
+            }
+        } else {
+            self.find_python_package_via_finder(package_name).await?
+        };
+
+        let cache_key = format!("{}::{}", package_name, package_root.to_string_lossy());
+        let index = {
+            let mut cache = self.python_semantic_cache.lock().await;
+            if let Some(existing) = cache.get(&cache_key) {
+                Arc::clone(existing)
+            } else {
+                drop(cache);
+                let package_root_clone = package_root.clone();
+                let package_name_owned = package_name.to_string();
+                let index = tokio::task::spawn_blocking(move || {
+                    PythonSemanticIndex::build(&package_name_owned, &package_root_clone)
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Python semantic index worker failed: {e}"))??;
+                let index = Arc::new(index);
+                let mut cache = self.python_semantic_cache.lock().await;
+                cache.put(cache_key.clone(), Arc::clone(&index));
+                index
+            }
+        };
+
+        Ok(index.search(query, limit))
+    }
+
+    async fn find_python_package_via_finder(&self, package_name: &str) -> Result<PathBuf> {
+        let package_name = package_name.to_string();
+        tokio::task::spawn_blocking(move || finder::find_python_package_path(&package_name))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to join python finder task: {e}"))?
+    }
+
+    fn find_local_python_package(context_path: &Path, package_name: &str) -> Option<PathBuf> {
+        if !context_path.exists() {
+            return None;
+        }
+
+        let mut roots = Vec::new();
+        roots.push(context_path.to_path_buf());
+        for extra in ["src", "python", "lib"] {
+            let candidate = context_path.join(extra);
+            if candidate.is_dir() {
+                roots.push(candidate);
+            }
+        }
+
+        let segments: Vec<&str> = package_name.split('.').collect();
+        for root in roots {
+            let mut path = root.clone();
+            for segment in &segments {
+                path.push(segment);
+            }
+
+            if path.is_dir() {
+                return Some(path);
+            }
+
+            let init_candidate = path.join("__init__.py");
+            if init_candidate.is_file() {
+                return Some(path);
+            }
+
+            let module_file = path.with_extension("py");
+            if module_file.is_file() {
+                if let Some(parent) = module_file.parent() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+        None
     }
 
     /// Resolve one or more import statements (Rust/Python/Node) to concrete symbol locations with
@@ -1336,6 +1474,18 @@ impl DocEngine {
 
     /// Clear all cache entries
     pub async fn clear_all_cache(&self) -> Result<CacheOperationResult> {
+        {
+            let mut mem = self.memory_cache.lock().await;
+            mem.clear();
+        }
+        {
+            let mut versions = self.version_cache.lock().await;
+            versions.clear();
+        }
+        {
+            let mut python = self.python_semantic_cache.lock().await;
+            python.clear();
+        }
         self.cache.clear_all()
     }
 

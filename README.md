@@ -10,7 +10,9 @@ Dociium lets AI assistants (Claude Desktop, Continue, etc.) fetch Rust crate doc
 
 - **Rust**: Crate search, item docs, trait impl listings, symbol search, source snippet placeholders (real source integration roadmap).
 - **Python / Node.js**: Local environment code + doc extraction (best‑effort heuristic parsing).
+- **Python Semantic Search**: Natural-language discovery across local package symbols (docstrings + signatures).
 - **Import Resolution**: Best‑effort mapping of `use` / `from` / `import` statements to file + symbol locations (Rust / Python / Node).
+- **Streamable HTTP Transport**: Optional SSE/Web-compatible transport in addition to stdio.
 - **Shared Canonical Types**: Stable JSON schema via `shared_types` (unifying multiple legacy internal representations).
 - **Deterministic Symbol Index**: Rebuildable from cached search index; future pluggable search backends.
 - **Resilient docs.rs parsing**: Hardened search-index.js extraction (brace balancing + pattern matching).
@@ -74,6 +76,7 @@ Examples you can literally type:
 | `search_symbols` | In-crate symbol search | `crate_name`, `query`, `kinds?`, `limit?` | Returns canonical `shared_types::SymbolSearchResult` |
 | `get_implementation` | Local code (py/node/rust) | `language`, `package_name`, `item_path`, `context_path?` | `item_path` uses `file#symbol` |
 | `resolve_imports` | Resolve import/use lines | `language`, `package`, `import_line?` / `code_block?` | Multi-line extraction |
+| `semantic_search` | Semantic package search (Python) | `language`, `package_name`, `query`, `limit?`, `context_path?` | Uses TF‑IDF + docstring analysis |
 | `get_cache_stats` | Cache metrics snapshot | – | Provides hit/miss/size metrics |
 | `clear_cache` | Clear all or crate-specific | `crate_name?` | Resets stats if full clear |
 | `cleanup_cache` | TTL-based purge | – | Applies configured TTL |
@@ -168,6 +171,49 @@ Environment variables for local discovery overrides:
 |----------|-------------------|---------|
 | Python | `DOC_PYTHON_PACKAGE_PATH` / `DOC_PYTHON_PACKAGE_PATH_<PKG>` | Force root directory for scanning |
 | Node   | `DOC_NODE_PACKAGE_PATH` / `DOC_NODE_PACKAGE_PATH_<PKG>`     | Override `node_modules` root |
+| Python Semantic Index | `DOC_PYTHON_PACKAGE_PATH_*` (as above) | Same overrides used when building semantic index |
+
+### CLI Transport Options
+
+`dociium` defaults to stdio. To expose the HTTP transport instead:
+
+```bash
+dociium --transport streamable-http --http-listen 127.0.0.1:7777
+```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--http-listen <ADDR>` | Required when using `streamable-http`; bind address/port. |
+| `--http-path <PATH>` | Endpoint prefix (default `/mcp`). |
+| `--http-keep-alive-secs <N>` | Override SSE ping interval (use `0` to disable). |
+| `--http-stateless` | Disable per-session state (stateless mode). |
+
+The HTTP transport mounts the MCP endpoint at `http://<addr><path>` using Server-Sent Events for streaming responses. Clients must send JSON POSTs with `Accept: application/json, text/event-stream` and consume the SSE stream for incremental output.
+
+## 🔎 Python Semantic Search
+
+The `semantic_search` tool ranks local Python symbols using a TF‑IDF model over docstrings, signatures, and module context. Typical request:
+
+```jsonc
+{
+  "type": "call_tool",
+  "name": "semantic_search",
+  "arguments": {
+    "language": "python",
+    "package_name": "requests",
+    "query": "create an http session with retries",
+    "limit": 5
+  }
+}
+```
+
+Key notes:
+
+- `package_name` is resolved relative to the active virtualenv; set `context_path` to prefer a local project directory.
+- Results include docstring previews, inferred signatures, and file/line offsets for quick navigation.
+- Indexes are cached in-process and on disk for repeat queries (cleared via `clear_cache`).
 
 ---
 

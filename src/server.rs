@@ -26,10 +26,14 @@ impl RustDocsMcpServer {
     pub async fn new(cache_dir: impl AsRef<std::path::Path>) -> Result<Self> {
         let engine = Arc::new(DocEngine::new(cache_dir).await?);
 
-        Ok(Self {
+        Ok(Self::from_engine(engine))
+    }
+
+    pub fn from_engine(engine: Arc<DocEngine>) -> Self {
+        Self {
             engine,
             tool_router: Self::tool_router(),
-        })
+        }
     }
 }
 
@@ -93,6 +97,20 @@ pub struct SearchSymbolsParams {
     pub kinds: Option<Vec<String>>,
     pub limit: Option<u32>,
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchParams {
+    /// Language to search (currently supports "python")
+    pub language: String,
+    /// Package or module name to search within
+    pub package_name: String,
+    /// Natural-language query describing the desired functionality
+    pub query: String,
+    /// Optional maximum number of results (defaults to 10, max 50)
+    pub limit: Option<u32>,
+    /// Optional project root to prefer when resolving local packages
+    pub context_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -594,6 +612,99 @@ impl RustDocsMcpServer {
             .collect();
 
         let json_content = serde_json::to_string(&shared_results)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Perform semantic semantic search across local language packages (Python support).
+    #[tool(
+        description = "Perform semantic search within a local package (currently Python support)"
+    )]
+    pub async fn semantic_search(
+        &self,
+        params: Parameters<SemanticSearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let SemanticSearchParams {
+            language,
+            package_name,
+            query,
+            limit,
+            context_path,
+        } = params.0;
+
+        if language.trim().is_empty() {
+            return Err(ErrorData::invalid_params("language cannot be empty", None));
+        }
+
+        let normalized_language = language.trim().to_lowercase();
+        if normalized_language != "python" {
+            return Err(ErrorData::invalid_params(
+                "semantic search currently supports language 'python' only",
+                None,
+            ));
+        }
+
+        if package_name.trim().is_empty() {
+            return Err(ErrorData::invalid_params(
+                "package_name cannot be empty",
+                None,
+            ));
+        }
+
+        if query.trim().is_empty() {
+            return Err(ErrorData::invalid_params("query cannot be empty", None));
+        }
+
+        if query.len() > 512 {
+            return Err(ErrorData::invalid_params(
+                "query too long (max 512 characters)",
+                None,
+            ));
+        }
+
+        let search_limit = limit.unwrap_or(10);
+        if search_limit == 0 {
+            return Err(ErrorData::invalid_params(
+                "limit must be greater than zero",
+                None,
+            ));
+        }
+        if search_limit > 50 {
+            return Err(ErrorData::invalid_params("limit too large (max 50)", None));
+        }
+
+        let results = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.engine.semantic_search(
+                &normalized_language,
+                package_name.trim(),
+                query.trim(),
+                search_limit as usize,
+                context_path
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty()),
+            ),
+        )
+        .await
+        .map_err(|_| {
+            ErrorData::internal_error(
+                format!(
+                    "Timeout performing semantic search in package '{}' for query '{}'",
+                    package_name, query
+                ),
+                None,
+            )
+        })?
+        .map_err(|e| {
+            ErrorData::internal_error(
+                format!("Semantic search failed for package '{}': {e}", package_name),
+                None,
+            )
+        })?;
+
+        let json_content = serde_json::to_string(&results)
             .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))

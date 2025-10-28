@@ -189,8 +189,8 @@ fn test_cache_hit_miss_metrics() {
 
     let stats = cache.get_enhanced_stats().unwrap();
     assert!(
-        stats.hit_rate > 0.20 && stats.hit_rate < 0.30,
-        "expected hit_rate near 0.25, got {}",
+        stats.hit_rate > 0.30 && stats.hit_rate < 0.40,
+        "expected hit_rate near 0.333, got {}",
         stats.hit_rate
     );
     assert!(
@@ -245,10 +245,10 @@ fn test_eviction_stats_increment() {
     // After eviction the in-memory entry count can drop; require at least one surviving entry.
     // Eviction can legitimately remove earlier entries; only assert non-negativity.
     assert!(
-        (stats.hit_rate >= 0.0
+        stats.hit_rate >= 0.0
             && stats.hit_rate <= 1.0
             && stats.miss_rate >= 0.0
-            && stats.miss_rate <= 1.0),
+            && stats.miss_rate <= 1.0,
         "rates out of bounds: hit_rate={}, miss_rate={}",
         stats.hit_rate,
         stats.miss_rate

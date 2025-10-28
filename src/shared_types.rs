@@ -158,6 +158,23 @@ pub struct SymbolSearchResult {
     pub module_path: String,
 }
 
+/// Semantic search result for language-aware discovery (Python, etc.).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SemanticSearchResult {
+    pub language: String,
+    pub package: String,
+    pub module_path: String,
+    pub item_name: String,
+    pub qualified_path: String,
+    pub kind: String,
+    pub file: String,
+    pub line: u32,
+    pub score: f32,
+    pub doc_preview: Option<String>,
+    pub signature: Option<String>,
+    pub source_preview: Option<String>,
+}
+
 /// Code snippet with context.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SourceSnippet {
@@ -219,6 +236,7 @@ impl_identity_shared!(
     SearchIndexItem,
     SearchIndexData,
     SymbolSearchResult,
+    SemanticSearchResult,
     SourceSnippet
 );
 

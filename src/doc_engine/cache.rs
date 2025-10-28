@@ -891,15 +891,22 @@ impl Cache {
     }
 
     /// Increment cache statistics
+    /// Only count GET operations (hits/misses) toward total_requests so that
+    /// hit_rate = hits / (hits + misses). Puts/evictions are excluded from the
+    /// denominator to avoid skewing accuracy metrics.
     fn increment_stat(&self, stat_type: &str) {
         let mut stats = self.stats.lock().unwrap();
-        stats.total_requests += 1;
-
         match stat_type {
-            "hits" => stats.hits += 1,
-            "misses" => stats.misses += 1,
+            "hits" => {
+                stats.hits += 1;
+                stats.total_requests += 1;
+            }
+            "misses" => {
+                stats.misses += 1;
+                stats.total_requests += 1;
+            }
             "evictions" => stats.evictions += 1,
-            "puts" => {} // Just count as total request
+            "puts" => {} // excluded from denominator
             _ => {}
         }
     }

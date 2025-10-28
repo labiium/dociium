@@ -20,9 +20,7 @@ pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
     }
     let specific_key = format!(
         "DOC_PYTHON_PACKAGE_PATH_{}",
-        package_name
-            .to_ascii_uppercase()
-            .replace(['-', '.'], "_")
+        package_name.to_ascii_uppercase().replace(['-', '.'], "_")
     );
     if let Ok(pkg_override) = std::env::var(&specific_key) {
         let p = Path::new(&pkg_override);
@@ -75,9 +73,7 @@ pub fn find_node_package_path(package_name: &str, context_path: &Path) -> Result
     }
     let specific_key = format!(
         "DOC_NODE_PACKAGE_PATH_{}",
-        package_name
-            .to_ascii_uppercase()
-            .replace(['-', '.'], "_")
+        package_name.to_ascii_uppercase().replace(['-', '.'], "_")
     );
     if let Ok(pkg_override) = std::env::var(&specific_key) {
         let p = Path::new(&pkg_override);
