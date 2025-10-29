@@ -47,6 +47,13 @@ fn convert_source_location(
     })
 }
 
+/// Configuration options for the documentation engine.
+#[derive(Debug, Clone, Default)]
+pub struct DocEngineOptions {
+    /// Optional default working directory used when resolving local packages.
+    pub working_dir: Option<PathBuf>,
+}
+
 /// Main documentation engine that coordinates fetching, caching, and indexing
 #[derive(Debug, Clone)]
 pub struct DocEngine {
@@ -59,11 +66,20 @@ pub struct DocEngine {
     python_processor: Arc<processors::python::PythonProcessor>,
     node_processor: Arc<processors::node::NodeProcessor>,
     rust_processor: Arc<processors::rust::RustProcessor>,
+    working_dir: Option<PathBuf>,
 }
 
 impl DocEngine {
     /// Create a new documentation engine
     pub async fn new(cache_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::new_with_options(cache_dir, DocEngineOptions::default()).await
+    }
+
+    /// Create a new documentation engine with explicit options.
+    pub async fn new_with_options(
+        cache_dir: impl AsRef<Path>,
+        options: DocEngineOptions,
+    ) -> Result<Self> {
         let cache_dir = cache_dir.as_ref();
         fs::create_dir_all(cache_dir)
             .await
@@ -79,6 +95,9 @@ impl DocEngine {
         let python_processor = Arc::new(processors::python::PythonProcessor);
         let node_processor = Arc::new(processors::node::NodeProcessor);
         let rust_processor = Arc::new(processors::rust::RustProcessor);
+        let working_dir = options
+            .working_dir
+            .and_then(|dir| std::fs::canonicalize(&dir).ok().or(Some(dir)));
 
         Ok(Self {
             fetcher,
@@ -90,7 +109,30 @@ impl DocEngine {
             python_processor,
             node_processor,
             rust_processor,
+            working_dir,
         })
+    }
+
+    fn default_context_dir(&self) -> PathBuf {
+        self.working_dir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    fn normalize_context_path(&self, raw: &str) -> PathBuf {
+        let candidate = PathBuf::from(raw);
+        if candidate.is_absolute() {
+            return candidate;
+        }
+        let base = self.default_context_dir();
+        base.join(candidate)
+    }
+
+    fn resolve_context_dir(&self, context_path: Option<&str>) -> PathBuf {
+        context_path
+            .map(|p| self.normalize_context_path(p))
+            .unwrap_or_else(|| self.default_context_dir())
     }
 
     /// Search for crates on crates.io
@@ -304,16 +346,17 @@ impl DocEngine {
             return Ok(Vec::new());
         }
 
-        let package_root = if let Some(ctx) = context_path {
-            let candidate = Self::find_local_python_package(Path::new(ctx), package_name);
-            if let Some(path) = candidate {
+        let context_dir = context_path
+            .map(|p| self.resolve_context_dir(Some(p)))
+            .unwrap_or_else(|| self.default_context_dir());
+
+        let package_root =
+            if let Some(path) = Self::find_local_python_package(&context_dir, package_name) {
                 path
             } else {
-                self.find_python_package_via_finder(package_name).await?
-            }
-        } else {
-            self.find_python_package_via_finder(package_name).await?
-        };
+                self.find_python_package_via_finder(package_name, Some(context_dir.clone()))
+                    .await?
+            };
 
         let cache_key = format!("{}::{}", package_name, package_root.to_string_lossy());
         let index = {
@@ -339,11 +382,17 @@ impl DocEngine {
         Ok(index.search(query, limit))
     }
 
-    async fn find_python_package_via_finder(&self, package_name: &str) -> Result<PathBuf> {
+    async fn find_python_package_via_finder(
+        &self,
+        package_name: &str,
+        context_path: Option<PathBuf>,
+    ) -> Result<PathBuf> {
         let package_name = package_name.to_string();
-        tokio::task::spawn_blocking(move || finder::find_python_package_path(&package_name))
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to join python finder task: {e}"))?
+        tokio::task::spawn_blocking(move || {
+            finder::find_python_package_path_with_context(&package_name, context_path.as_deref())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to join python finder task: {e}"))?
     }
 
     fn find_local_python_package(context_path: &Path, package_name: &str) -> Option<PathBuf> {
@@ -445,12 +494,24 @@ impl DocEngine {
                 }
             }
 
-            fn norm_key(lang: &str, pkg: &str, line: &str) -> String {
-                format!("{lang}::{pkg}::{}", line.trim())
+            fn norm_key(lang: &str, pkg: &str, context: &str, line: &str) -> String {
+                let ctx = if context.is_empty() {
+                    "<default>"
+                } else {
+                    context
+                };
+                let sanitized = ctx.replace("::", "/");
+                format!("{lang}::{pkg}::{sanitized}::{}", line.trim())
             }
 
-            fn get(&mut self, lang: &str, pkg: &str, line: &str) -> Option<ImportResolutionResult> {
-                let key = Self::norm_key(lang, pkg, line);
+            fn get(
+                &mut self,
+                lang: &str,
+                pkg: &str,
+                context: &str,
+                line: &str,
+            ) -> Option<ImportResolutionResult> {
+                let key = Self::norm_key(lang, pkg, context, line);
                 if let Some(&idx) = self.map.get(&key) {
                     if Instant::now().duration_since(self.entries[idx].inserted) > self.ttl {
                         self.remove(&key);
@@ -468,10 +529,11 @@ impl DocEngine {
                 &mut self,
                 lang: &str,
                 pkg: &str,
+                context: &str,
                 line: &str,
                 result: ImportResolutionResult,
             ) {
-                let key = Self::norm_key(lang, pkg, line);
+                let key = Self::norm_key(lang, pkg, context, line);
                 if let Some(&idx) = self.map.get(&key) {
                     self.entries[idx].result = result;
                     self.entries[idx].inserted = Instant::now();
@@ -565,7 +627,7 @@ impl DocEngine {
                         cache_mutex
                             .lock()
                             .unwrap()
-                            .get("rust", &params.package, &raw)
+                            .get("rust", &params.package, "", &raw)
                     {
                         results.push(cached);
                         continue;
@@ -590,6 +652,7 @@ impl DocEngine {
                         cache_mutex.lock().unwrap().insert(
                             "rust",
                             &params.package,
+                            "",
                             &raw,
                             resolution.clone(),
                         );
@@ -748,6 +811,7 @@ impl DocEngine {
                     cache_mutex.lock().unwrap().insert(
                         "rust",
                         &params.package,
+                        "",
                         &raw,
                         resolution.clone(),
                     );
@@ -756,15 +820,20 @@ impl DocEngine {
             }
             "python" => {
                 // Root resolution
+                let context_dir = self.resolve_context_dir(params.context_path.as_deref());
+                let context_key = context_dir.to_string_lossy().to_string();
                 let package_root =
-                    crate::doc_engine::finder::find_python_package_path(&params.package)?;
+                    crate::doc_engine::finder::find_python_package_path_with_context(
+                        &params.package,
+                        Some(&context_dir),
+                    )?;
                 for raw in import_lines {
-                    if let Some(cached) =
-                        cache_mutex
-                            .lock()
-                            .unwrap()
-                            .get("python", &params.package, &raw)
-                    {
+                    if let Some(cached) = cache_mutex.lock().unwrap().get(
+                        "python",
+                        &params.package,
+                        &context_key,
+                        &raw,
+                    ) {
                         results.push(cached);
                         continue;
                     }
@@ -898,6 +967,7 @@ impl DocEngine {
                     cache_mutex.lock().unwrap().insert(
                         "python",
                         &params.package,
+                        &context_key,
                         &raw,
                         resolution.clone(),
                     );
@@ -906,14 +976,11 @@ impl DocEngine {
             }
             "node" => {
                 // Determine root (reuse finder)
-                let context_path = params
-                    .context_path
-                    .as_ref()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                let context_dir = self.resolve_context_dir(params.context_path.as_deref());
+                let context_key = context_dir.to_string_lossy().to_string();
                 let package_root = crate::doc_engine::finder::find_node_package_path(
                     &params.package,
-                    &context_path,
+                    &context_dir,
                 )?;
                 // Precompile regexes once outside the per-line loop (Clippy: regex_creation_in_loops)
                 let import_re = regex::Regex::new(
@@ -927,7 +994,7 @@ impl DocEngine {
                         cache_mutex
                             .lock()
                             .unwrap()
-                            .get("node", &params.package, &raw)
+                            .get("node", &params.package, &context_key, &raw)
                     {
                         results.push(cached);
                         continue;
@@ -1115,6 +1182,7 @@ impl DocEngine {
                     cache_mutex.lock().unwrap().insert(
                         "node",
                         &params.package,
+                        &context_key,
                         &raw,
                         resolution.clone(),
                     );
@@ -1363,17 +1431,14 @@ impl DocEngine {
             .split_once('#')
             .context("Invalid item_path format. Expected 'path/to/file#item_name'")?;
 
-        let default_context_path = PathBuf::from(".");
-        let context_path = context_path
-            .map(PathBuf::from)
-            .unwrap_or(default_context_path);
+        let context_dir = self.resolve_context_dir(context_path);
 
         match language {
             "python" => {
                 self.python_processor
                     .get_implementation_context(
                         package_name,
-                        &context_path,
+                        &context_dir,
                         relative_path,
                         item_name,
                     )
@@ -1383,7 +1448,7 @@ impl DocEngine {
                 self.node_processor
                     .get_implementation_context(
                         package_name,
-                        &context_path,
+                        &context_dir,
                         relative_path,
                         item_name,
                     )
@@ -1394,7 +1459,7 @@ impl DocEngine {
                 self.rust_processor
                     .get_implementation_context(
                         package_name,
-                        &context_path,
+                        &context_dir,
                         relative_path,
                         item_name,
                     )

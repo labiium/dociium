@@ -123,11 +123,12 @@ impl LanguageProcessor for PythonProcessor {
     async fn get_implementation_context(
         &self,
         package_name: &str,
-        _context_path: &Path,
+        context_path: &Path,
         relative_path: &str,
         item_name: &str,
     ) -> Result<ImplementationContext> {
-        let package_root = finder::find_python_package_path(package_name)?;
+        let package_root =
+            finder::find_python_package_path_with_context(package_name, Some(context_path))?;
         let file_path = package_root.join(relative_path);
         let source_code = fs::read_to_string(&file_path).await?;
         let implementation = extract_item_by_name(&source_code, item_name)?;
