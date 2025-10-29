@@ -3,7 +3,6 @@ use crate::doc_engine::finder;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use std::path::Path;
-use tokio::fs;
 use tree_sitter::Parser;
 
 #[derive(Debug)]
@@ -130,7 +129,7 @@ impl LanguageProcessor for PythonProcessor {
         let package_root =
             finder::find_python_package_path_with_context(package_name, Some(context_path))?;
         let file_path = package_root.join(relative_path);
-        let source_code = fs::read_to_string(&file_path).await?;
+        let source_code = tokio::fs::read_to_string(&file_path).await?;
         let implementation = extract_item_by_name(&source_code, item_name)?;
         let documentation = extract_docstring(&source_code, item_name);
 

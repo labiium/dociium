@@ -5,9 +5,27 @@ use semver::Version;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Finds the installation path of a Python package using `pip show`.
-/// This works for both `venv` and `conda` environments if `pip` is on the PATH.
+/// Finds the installation path of a Python package using `pip show` or `uv pip show`.
+/// This works for both `venv`, `conda`, and `uv` environments.
+///
+/// This is a convenience wrapper around `find_python_package_path_with_context`
+/// that uses the current directory as the context.
 pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
+    find_python_package_path_with_context(package_name, None)
+}
+
+/// Finds the installation path of a Python package using `pip show` or `uv pip show`, with optional context path.
+/// The context_path parameter allows searching for packages relative to a specific directory.
+/// This works for `venv`, `conda`, and `uv` environments.
+///
+/// Resolution order:
+/// 1. Environment variable overrides (`DOC_PYTHON_PACKAGE_PATH*`)
+/// 2. `pip show` command (if pip is available)
+/// 3. `uv pip show` command (fallback for uv-managed environments)
+pub fn find_python_package_path_with_context(
+    package_name: &str,
+    context_path: Option<&Path>,
+) -> Result<PathBuf> {
     // Environment variable override (exact path). Precedence over invoking pip.
     // Names tried (first match wins):
     //  1. DOC_PYTHON_PACKAGE_PATH (global override)
@@ -29,15 +47,38 @@ pub fn find_python_package_path(package_name: &str) -> Result<PathBuf> {
         }
     }
 
-    let output = Command::new("pip")
-        .arg("show")
-        .arg(package_name)
-        .output()
-        .context("Failed to execute 'pip show'. Is pip installed and in your PATH?")?;
+    // Try pip first
+    let mut cmd = Command::new("pip");
+    cmd.arg("show").arg(package_name);
+
+    // Set current directory if context_path is provided
+    if let Some(ctx) = context_path {
+        cmd.current_dir(ctx);
+    }
+
+    let output = cmd.output();
+
+    // If pip fails or is not found, try uv pip
+    let output = match output {
+        Ok(out) if out.status.success() => out,
+        _ => {
+            let mut uv_cmd = Command::new("uv");
+            uv_cmd.arg("pip").arg("show").arg(package_name);
+
+            if let Some(ctx) = context_path {
+                uv_cmd.current_dir(ctx);
+            }
+
+            uv_cmd.output().context(
+                "Failed to execute 'pip show' or 'uv pip show'. Is pip or uv installed and in your PATH?",
+            )?
+        }
+    };
 
     if !output.status.success() {
         return Err(anyhow!(
-            "'pip show {}' failed: {}",
+            "'pip show {}' (or 'uv pip show {}') failed: {}",
+            package_name,
             package_name,
             String::from_utf8_lossy(&output.stderr)
         ));

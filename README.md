@@ -9,9 +9,11 @@ Dociium lets AI assistants (Claude Desktop, Continue, etc.) fetch Rust crate doc
 ## ✨ Highlights
 
 - **Rust**: Crate search, item docs, trait impl listings, symbol search, source snippet placeholders (real source integration roadmap).
-- **Python / Node.js**: Local environment code + doc extraction (best‑effort heuristic parsing).
+- **Python / Node.js**: Local environment code + doc extraction (best‑effort heuristic parsing); Python supports `pip`, `uv`, `venv`, and `conda`.
 - **Python Semantic Search**: Natural-language discovery across local package symbols (docstrings + signatures).
 - **Import Resolution**: Best‑effort mapping of `use` / `from` / `import` statements to file + symbol locations (Rust / Python / Node).
+- **Working Directory Support**: Configurable base context for package resolution; ideal for monorepos and multi-virtualenv setups.
+- **Context-Aware Caching**: Import resolution cache includes context path to prevent cross-contamination between projects.
 - **Streamable HTTP Transport**: Optional SSE/Web-compatible transport in addition to stdio.
 - **Shared Canonical Types**: Stable JSON schema via `shared_types` (unifying multiple legacy internal representations).
 - **Deterministic Symbol Index**: Rebuildable from cached search index; future pluggable search backends.
@@ -56,10 +58,12 @@ Examples you can literally type:
 - “Show docs for tokio::sync::Mutex”
 - “List impls of serde::Serialize”
 - “What traits does std::vec::Vec implement?”
-- “Resolve these imports:\nuse std::fmt::Display;\nuse serde::de::Deserializer;”
-- “Find symbols in chrono related to time zone”
-- “Show implementation of requests.get”
-- “Get Node implementation of express Router”
+- "Resolve these imports:\nuse std::fmt::Display;\nuse serde::de::Deserializer;"
+- "Find symbols in chrono related to time zone"
+- "Show implementation of requests.get"
+- "Get Node implementation of express Router"
+
+**Note for uv users:** Works seamlessly with uv-managed Python environments—just ensure `uv` is in your PATH.
 
 ---
 
@@ -74,9 +78,9 @@ Examples you can literally type:
 | `list_impls_for_type` | Trait impls for a type | `crate_name`, `type_path` | Symmetric to above |
 | `source_snippet` | Code snippet (placeholder) | `crate_name`, `item_path`, `context_lines?` | `context_lines ≤ 100` enforced |
 | `search_symbols` | In-crate symbol search | `crate_name`, `query`, `kinds?`, `limit?` | Returns canonical `shared_types::SymbolSearchResult` |
-| `get_implementation` | Local code (py/node/rust) | `language`, `package_name`, `item_path`, `context_path?` | `item_path` uses `file#symbol` |
-| `resolve_imports` | Resolve import/use lines | `language`, `package`, `import_line?` / `code_block?` | Multi-line extraction |
-| `semantic_search` | Semantic package search (Python) | `language`, `package_name`, `query`, `limit?`, `context_path?` | Uses TF‑IDF + docstring analysis |
+| `get_implementation` | Local code (py/node/rust) | `language`, `package_name`, `item_path`, `context_path?` | `item_path` uses `file#symbol`; `context_path` resolved relative to working directory |
+| `resolve_imports` | Resolve import/use lines | `language`, `package`, `import_line?` / `code_block?`, `context_path?` | Multi-line extraction; `context_path` affects package resolution |
+| `semantic_search` | Semantic package search (Python) | `language`, `package_name`, `query`, `limit?`, `context_path?` | Uses TF‑IDF + docstring analysis; `context_path` resolved relative to working directory |
 | `get_cache_stats` | Cache metrics snapshot | – | Provides hit/miss/size metrics |
 | `clear_cache` | Clear all or crate-specific | `crate_name?` | Resets stats if full clear |
 | `cleanup_cache` | TTL-based purge | – | Applies configured TTL |
@@ -134,7 +138,7 @@ Heuristics:
 
 Cache:
 - In-process LRU (capacity 512) with 5-minute TTL.
-- Key: `language::package::import_line`.
+- Key: `language::package::context_path::import_line` (context-aware to prevent collisions across different project directories).
 
 ---
 
@@ -159,19 +163,65 @@ Key Metrics (from `get_cache_stats`):
 
 ## ⚙️ Configuration
 
+### Cache Directory
+
 Priority order for cache directory:
 1. CLI: `--cache-dir`
 2. Env: `RDOCS_CACHE_DIR`
 3. Platform default (`$XDG_CACHE_HOME/dociium` or OS equivalent)
 4. Fallback: `./.dociium-cache`
 
-Environment variables for local discovery overrides:
+### Working Directory
+
+The documentation engine supports an optional **working directory** that determines the base context for resolving local packages. This is particularly useful for:
+
+- **Monorepos** with multiple Python virtualenvs (including `uv` projects) or Node.js workspaces
+- **Project-specific package installations** that differ from global environments
+- **Context-aware caching** to prevent cross-contamination between different project contexts
+- **uv-managed projects** where packages are isolated in `.venv` directories
+
+**Setting the Working Directory:**
+
+The working directory can be configured programmatically when initializing the `DocEngine`:
+
+```rust
+use dociium::doc_engine::{DocEngine, DocEngineOptions};
+use std::path::PathBuf;
+
+let options = DocEngineOptions {
+    working_dir: Some(PathBuf::from("/path/to/project")),
+};
+let engine = DocEngine::new_with_options("./cache", options).await?;
+```
+
+**Behavior:**
+
+- When `working_dir` is set, all `context_path` parameters in MCP tool calls are resolved relative to this directory (unless an absolute path is provided)
+- Python package discovery tries `pip show` first, then falls back to `uv pip show` if pip is unavailable (respecting local virtualenvs and uv-managed environments)
+- Node.js `npm root` commands use the working directory as context
+- Import resolution cache keys include the resolved context path, ensuring separate cache entries per project
+- Falls back to `std::env::current_dir()` when not explicitly set
+
+**uv Support:**
+
+For Python users leveraging [uv](https://github.com/astral-sh/uv), the engine automatically detects and uses `uv pip show` when `pip` is not available. This works seamlessly with:
+- `uv sync` and `uv run` managed environments
+- Projects using `uv venv` for virtual environment creation
+- `uv pip install` managed dependencies
+
+No additional configuration needed—just ensure `uv` is in your PATH.
+
+### Environment Variable Overrides
+
+Environment variables for local package discovery (these take precedence over working directory resolution):
 
 | Language | Variable Patterns | Purpose |
 |----------|-------------------|---------|
-| Python | `DOC_PYTHON_PACKAGE_PATH` / `DOC_PYTHON_PACKAGE_PATH_<PKG>` | Force root directory for scanning |
-| Node   | `DOC_NODE_PACKAGE_PATH` / `DOC_NODE_PACKAGE_PATH_<PKG>`     | Override `node_modules` root |
+| Python | `DOC_PYTHON_PACKAGE_PATH` / `DOC_PYTHON_PACKAGE_PATH_<PKG>` | Force root directory for scanning (bypasses `pip show` and working directory) |
+| Node   | `DOC_NODE_PACKAGE_PATH` / `DOC_NODE_PACKAGE_PATH_<PKG>`     | Override `node_modules` root (bypasses `npm root` and working directory) |
 | Python Semantic Index | `DOC_PYTHON_PACKAGE_PATH_*` (as above) | Same overrides used when building semantic index |
+
+**Note:** Environment variables take highest precedence, followed by working directory context, then system defaults.
 
 ### CLI Transport Options
 
@@ -211,9 +261,65 @@ The `semantic_search` tool ranks local Python symbols using a TF‑IDF model ove
 
 Key notes:
 
-- `package_name` is resolved relative to the active virtualenv; set `context_path` to prefer a local project directory.
+- `package_name` is resolved using `pip show` or `uv pip show` in the context of the configured working directory (if set) or current directory.
+- `context_path` parameter (when provided) is resolved relative to the working directory and overrides the default context for package resolution.
 - Results include docstring previews, inferred signatures, and file/line offsets for quick navigation.
 - Indexes are cached in-process and on disk for repeat queries (cleared via `clear_cache`).
+- For monorepos, multi-virtualenv setups, or uv-managed projects, configure the working directory at engine initialization or use `context_path` to target specific project directories.
+
+---
+
+## 🐍 uv Integration
+
+Dociium provides first-class support for Python users leveraging [uv](https://github.com/astral-sh/uv), the fast Python package manager written in Rust.
+
+### Automatic Detection
+
+The engine automatically tries `uv pip show` as a fallback when `pip` is not available, enabling seamless operation with uv-managed environments:
+
+```bash
+# Works out of the box with uv projects
+cd my-uv-project
+uv sync
+# dociium will automatically use 'uv pip show' to locate packages
+```
+
+### Supported Workflows
+
+- **`uv sync`**: Packages installed via `uv sync` are automatically discovered
+- **`uv venv`**: Virtual environments created with `uv venv` work transparently
+- **`uv pip install`**: Direct package installations are detected
+- **`uv run`**: Scripts run via `uv run` can access dociium features
+
+### Resolution Order
+
+Python package discovery follows this precedence:
+
+1. **Environment variables**: `DOC_PYTHON_PACKAGE_PATH` or `DOC_PYTHON_PACKAGE_PATH_<PKG>`
+2. **pip**: `pip show <package>` (if pip is in PATH)
+3. **uv**: `uv pip show <package>` (fallback if pip unavailable)
+
+### Working Directory with uv
+
+For uv projects with multiple virtual environments or monorepo setups, configure the working directory:
+
+```rust
+use dociium::doc_engine::{DocEngine, DocEngineOptions};
+use std::path::PathBuf;
+
+// Point to your uv project root
+let options = DocEngineOptions {
+    working_dir: Some(PathBuf::from("/path/to/uv-project")),
+};
+let engine = DocEngine::new_with_options("./cache", options).await?;
+```
+
+Alternatively, use `context_path` in MCP tool calls to target specific uv projects dynamically.
+
+### Requirements
+
+- `uv` must be installed and available in your PATH
+- No additional configuration needed—detection is automatic
 
 ---
 
