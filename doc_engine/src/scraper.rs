@@ -12,7 +12,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
-use crate::types::{ItemDoc, SourceLocation};
+use crate::types::{ItemDoc, SourceLocation, SourceSnippet};
 
 /// Docs.rs scraper for fetching documentation
 pub struct DocsRsScraper {
@@ -352,6 +352,44 @@ impl DocsRsScraper {
         })
     }
 
+    /// Fetch a highlighted snippet of source code for an item.
+    #[instrument(
+        skip(self),
+        fields(
+            crate_name = %crate_name,
+            version = %version,
+            file = %source.file,
+            line = %source.line
+        )
+    )]
+    pub async fn fetch_source_snippet(
+        &self,
+        crate_name: &str,
+        version: &str,
+        source: &SourceLocation,
+        context_lines: u32,
+    ) -> Result<SourceSnippet> {
+        if source.file.is_empty() {
+            return Err(anyhow!("Source location missing file information"));
+        }
+
+        let encoded_path = source
+            .file
+            .split('/')
+            .map(urlencoding::encode)
+            .collect::<Vec<_>>()
+            .join("/");
+
+        let url = format!(
+            "{}/{}/{}/src/{}.html?plain=1",
+            self.base_url, crate_name, version, encoded_path
+        );
+        debug!("Fetching source snippet from: {}", url);
+
+        let source_text = self.fetch_text(&url).await?;
+        build_source_snippet(&source_text, source, context_lines)
+    }
+
     /// Parse search index JavaScript content
     fn parse_search_index(
         &self,
@@ -596,6 +634,99 @@ impl DocsRsScraper {
             end_line,
             end_column: None,
         })
+    }
+}
+
+fn build_source_snippet(
+    source_text: &str,
+    source: &SourceLocation,
+    context_lines: u32,
+) -> Result<SourceSnippet> {
+    let total_lines = source_text.lines().count();
+    if total_lines == 0 {
+        return Err(anyhow!("Source file is empty"));
+    }
+
+    let highlight_start = source.line.max(1);
+    let highlight_end = source.end_line.unwrap_or(highlight_start).max(1);
+
+    let start_line = highlight_start.saturating_sub(context_lines).max(1);
+    let end_line = (highlight_end + context_lines).min(total_lines as u32);
+
+    let start_index = (start_line - 1) as usize;
+    let end_index = end_line as usize;
+
+    let mut snippet_lines = Vec::with_capacity(end_index.saturating_sub(start_index));
+    for line in source_text
+        .lines()
+        .skip(start_index)
+        .take(end_index - start_index)
+    {
+        snippet_lines.push(line.to_string());
+    }
+
+    let code = snippet_lines.join("\n");
+
+    Ok(SourceSnippet {
+        code,
+        file: source.file.clone(),
+        line_start: start_line,
+        line_end: end_line,
+        context_lines,
+        highlighted_line: Some(highlight_start),
+        language: "rust".to_string(),
+    })
+}
+
+#[cfg(test)]
+mod snippet_tests {
+    use super::*;
+
+    #[test]
+    fn build_snippet_includes_context_lines() {
+        let source = SourceLocation {
+            file: "crate/src/lib.rs".to_string(),
+            line: 3,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        };
+
+        let snippet = build_source_snippet("a\nb\nc\nd\ne", &source, 1).unwrap();
+        assert_eq!(snippet.line_start, 2);
+        assert_eq!(snippet.line_end, 4);
+        assert_eq!(snippet.highlighted_line, Some(3));
+        assert_eq!(snippet.code, "b\nc\nd");
+    }
+
+    #[test]
+    fn build_snippet_respects_end_line() {
+        let source = SourceLocation {
+            file: "crate/src/lib.rs".to_string(),
+            line: 4,
+            column: 1,
+            end_line: Some(5),
+            end_column: None,
+        };
+
+        let snippet = build_source_snippet("1\n2\n3\n4\n5\n6", &source, 0).unwrap();
+        assert_eq!(snippet.line_start, 4);
+        assert_eq!(snippet.line_end, 5);
+        assert_eq!(snippet.code, "4\n5");
+    }
+
+    #[test]
+    fn build_snippet_errors_for_empty_source() {
+        let source = SourceLocation {
+            file: "crate/src/lib.rs".to_string(),
+            line: 1,
+            column: 1,
+            end_line: None,
+            end_column: None,
+        };
+
+        let err = build_source_snippet("", &source, 0).unwrap_err();
+        assert!(err.to_string().contains("empty"));
     }
 }
 

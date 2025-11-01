@@ -51,6 +51,7 @@ url = "2.5"
 bytes = "1.5"
 lru = "0.12"
 bincode = { workspace = true }
+urlencoding = "2.1"
 
 [dev-dependencies]
 insta = { workspace = true }
