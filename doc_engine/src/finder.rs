@@ -173,11 +173,7 @@ mod tests {
     fn errors_on_missing_crate() {
         let temp = tempdir().unwrap();
         let _guard = CargoHomeGuard::set(temp.path());
-        let registry = temp
-            .path()
-            .join("registry")
-            .join("src")
-            .join("test-reg");
+        let registry = temp.path().join("registry").join("src").join("test-reg");
         fs::create_dir_all(&registry).unwrap();
 
         let err = find_rust_crate_path("missing", "0.1.0").unwrap_err();

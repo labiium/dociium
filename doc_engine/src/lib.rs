@@ -510,24 +510,24 @@ impl CrateDocumentation {
         item_path: &str,
         context_lines: u32,
     ) -> Result<SourceSnippet> {
-        // Find the item in the search index
-        if let Some(item) = self.find_item_by_path(item_path)? {
-            // For now, we return a placeholder since source code access
-            // requires additional implementation beyond docs.rs scraping
-            Ok(SourceSnippet {
-                code: format!(
-                    "// Source code for {item_path}\n// (Source code viewing not yet implemented for docs.rs scraping)"
-                ),
-                file: format!("{}.rs", item.name),
-                line_start: 1,
-                line_end: context_lines,
-                context_lines,
-                highlighted_line: Some(1),
-                language: "rust".to_string(),
-            })
-        } else {
-            Err(anyhow::anyhow!("Item not found: {}", item_path))
+        if self.find_item_by_path(item_path)?.is_none() {
+            return Err(anyhow::anyhow!("Item not found: {}", item_path));
         }
+
+        let item_doc = self.get_item_doc(item_path).await?;
+        let source_location = item_doc
+            .source_location
+            .ok_or_else(|| anyhow::anyhow!("No source location for {}", item_path))?;
+
+        let scraper = scraper::DocsRsScraper::new();
+        scraper
+            .fetch_source_snippet(
+                &self.crate_name,
+                &self.version,
+                &source_location,
+                context_lines,
+            )
+            .await
     }
 
     /// Search for symbols within the crate
