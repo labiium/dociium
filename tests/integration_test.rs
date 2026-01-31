@@ -7,7 +7,7 @@ use dociium::doc_engine::types::ImportResolutionParams;
 use dociium::{
     CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
-    SourceSnippetParams,
+    SourceSnippetParams, ToolConfig,
 };
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, ServerHandler};
 use std::fs;
@@ -688,4 +688,52 @@ async fn test_resolve_imports_node_basic() {
             }
         }
     }
+}
+
+//
+// Tests for tool filtering based on language flags (--python-only, --rust-only, etc.)
+//
+
+#[tokio::test]
+async fn test_python_only_config() {
+    // Verify that ToolConfig::python_only() creates correct config
+    let config = ToolConfig::python_only();
+    
+    assert!(!config.rust_enabled, "Python-only config should disable Rust tools");
+    assert!(config.python_enabled, "Python-only config should enable Python tools");
+    assert!(!config.node_enabled, "Python-only config should disable Node tools");
+    assert!(!config.cache_enabled, "Python-only config should disable cache tools");
+}
+
+#[tokio::test]
+async fn test_rust_only_config() {
+    // Verify that ToolConfig::rust_only() creates correct config
+    let config = ToolConfig::rust_only();
+    
+    assert!(config.rust_enabled, "Rust-only config should enable Rust tools");
+    assert!(!config.python_enabled, "Rust-only config should disable Python tools");
+    assert!(!config.node_enabled, "Rust-only config should disable Node tools");
+    assert!(!config.cache_enabled, "Rust-only config should disable cache tools");
+}
+
+#[tokio::test]
+async fn test_node_only_config() {
+    // Verify that ToolConfig::node_only() creates correct config
+    let config = ToolConfig::node_only();
+    
+    assert!(!config.rust_enabled, "Node-only config should disable Rust tools");
+    assert!(!config.python_enabled, "Node-only config should disable Python tools");
+    assert!(config.node_enabled, "Node-only config should enable Node tools");
+    assert!(!config.cache_enabled, "Node-only config should disable cache tools");
+}
+
+#[tokio::test]
+async fn test_all_config() {
+    // Verify that ToolConfig::all() enables everything
+    let config = ToolConfig::all();
+    
+    assert!(config.rust_enabled, "All config should enable Rust tools");
+    assert!(config.python_enabled, "All config should enable Python tools");
+    assert!(config.node_enabled, "All config should enable Node tools");
+    assert!(config.cache_enabled, "All config should enable cache tools");
 }

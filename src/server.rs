@@ -10,7 +10,7 @@ use rmcp::{
     handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, ErrorData, Implementation, ServerCapabilities, ServerInfo},
     service::RequestContext,
-    tool, tool_handler, tool_router, RoleServer, ServerHandler,
+    tool, tool_router, RoleServer, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ impl ToolConfig {
             rust_enabled: true,
             python_enabled: false,
             node_enabled: false,
-            cache_enabled: true, // cache tools always included
+            cache_enabled: false, // cache tools disabled by default in language-only modes
         }
     }
 
@@ -56,7 +56,7 @@ impl ToolConfig {
             rust_enabled: false,
             python_enabled: true,
             node_enabled: false,
-            cache_enabled: true, // cache tools always included
+            cache_enabled: false, // cache tools disabled by default in language-only modes
         }
     }
 
@@ -66,7 +66,7 @@ impl ToolConfig {
             rust_enabled: false,
             python_enabled: false,
             node_enabled: true,
-            cache_enabled: true, // cache tools always included
+            cache_enabled: false, // cache tools disabled by default in language-only modes
         }
     }
 
@@ -113,9 +113,15 @@ pub struct RustDocsMcpServer {
 
 impl RustDocsMcpServer {
     pub async fn new(cache_dir: impl AsRef<std::path::Path>) -> Result<Self> {
-        let engine = Arc::new(DocEngine::new(cache_dir).await?);
+        Self::new_with_config(cache_dir, ToolConfig::all()).await
+    }
 
-        Ok(Self::from_engine_with_config(engine, ToolConfig::all()))
+    pub async fn new_with_config(
+        cache_dir: impl AsRef<std::path::Path>,
+        config: ToolConfig,
+    ) -> Result<Self> {
+        let engine = Arc::new(DocEngine::new(cache_dir).await?);
+        Ok(Self::from_engine_with_config(engine, config))
     }
 
     pub fn from_engine(engine: Arc<DocEngine>) -> Self {
@@ -1206,7 +1212,6 @@ impl RustDocsMcpServer {
     }
 }
 
-#[tool_handler(router = self.tool_router)]
 impl ServerHandler for RustDocsMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -1233,6 +1238,59 @@ impl ServerHandler for RustDocsMcpServer {
     ) -> Result<rmcp::model::InitializeResult, ErrorData> {
         Ok(self.get_info())
     }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+        // Get the full list from the router
+        let all_tools = self.tool_router.list_all();
+        
+        // Filter tools based on config
+        let filtered_tools: Vec<rmcp::model::Tool> = all_tools.into_iter().filter(|tool| {
+            let name = tool.name.as_ref();
+            match name {
+                // Rust tools (8 tools)
+                "search_crates" | "crate_info" | "get_item_doc" | "list_trait_impls" 
+                | "list_impls_for_type" | "source_snippet" | "resolve_imports" | "search_symbols" => {
+                    self.config.rust_enabled
+                }
+                // Python tools (4 tools)
+                "semantic_search" | "list_class_methods" | "get_class_method" | "search_package_code" => {
+                    self.config.python_enabled
+                }
+                // Cache tools (3 tools)
+                "get_cache_stats" | "clear_cache" | "cleanup_cache" => {
+                    self.config.cache_enabled
+                }
+                // Cross-language tool (get_implementation supports Python and Node.js)
+                "get_implementation" => {
+                    // Show this tool if either Python or Node.js is enabled
+                    self.config.python_enabled || self.config.node_enabled
+                }
+                // Default: include the tool (shouldn't happen for known tools)
+                _ => true,
+            }
+        }).collect();
+        
+        Ok(rmcp::model::ListToolsResult {
+            tools: filtered_tools,
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+        use rmcp::handler::server::tool::ToolCallContext;
+        
+        let tool_context = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tool_context).await
+    }
 }
 
 #[cfg(test)]
@@ -1246,7 +1304,7 @@ mod tests {
         assert!(config.rust_enabled);
         assert!(!config.python_enabled);
         assert!(!config.node_enabled);
-        assert!(config.cache_enabled); // cache always included
+        assert!(!config.cache_enabled); // cache disabled by default in language-only modes
     }
 
     #[test]
@@ -1255,7 +1313,7 @@ mod tests {
         assert!(!config.rust_enabled);
         assert!(config.python_enabled);
         assert!(!config.node_enabled);
-        assert!(config.cache_enabled); // cache always included
+        assert!(!config.cache_enabled); // cache disabled by default in language-only modes
     }
 
     #[test]
@@ -1264,7 +1322,7 @@ mod tests {
         assert!(!config.rust_enabled);
         assert!(!config.python_enabled);
         assert!(config.node_enabled);
-        assert!(config.cache_enabled); // cache always included
+        assert!(!config.cache_enabled); // cache disabled by default in language-only modes
     }
 
     #[test]
