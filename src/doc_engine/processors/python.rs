@@ -126,6 +126,7 @@ impl LanguageProcessor for PythonProcessor {
         relative_path: &str,
         item_name: &str,
     ) -> Result<ImplementationContext> {
+        // Pure Rust tree-sitter based extraction
         let package_root =
             finder::find_python_package_path_with_context(package_name, Some(context_path))?;
         let file_path = package_root.join(relative_path);
@@ -140,5 +141,62 @@ impl LanguageProcessor for PythonProcessor {
             implementation,
             language: "python".to_string(),
         })
+    }
+}
+
+impl PythonProcessor {
+    /// Extract all methods from a class.
+    pub async fn list_class_methods(
+        &self,
+        package_name: &str,
+        context_path: &Path,
+        relative_path: &str,
+        class_name: &str,
+        include_private: bool,
+    ) -> Result<Vec<crate::doc_engine::python_analyzer::MethodInfo>> {
+        use crate::doc_engine::python_analyzer;
+
+        let package_root =
+            finder::find_python_package_path_with_context(package_name, Some(context_path))?;
+        let file_path = package_root.join(relative_path);
+        let source_code = tokio::fs::read_to_string(&file_path).await?;
+
+        python_analyzer::extract_class_methods(&source_code, class_name, include_private)
+    }
+
+    /// Extract a specific method from a class.
+    pub async fn get_class_method(
+        &self,
+        package_name: &str,
+        context_path: &Path,
+        relative_path: &str,
+        class_name: &str,
+        method_name: &str,
+    ) -> Result<crate::doc_engine::python_analyzer::MethodInfo> {
+        use crate::doc_engine::python_analyzer;
+
+        let package_root =
+            finder::find_python_package_path_with_context(package_name, Some(context_path))?;
+        let file_path = package_root.join(relative_path);
+        let source_code = tokio::fs::read_to_string(&file_path).await?;
+
+        python_analyzer::extract_specific_method(&source_code, class_name, method_name)
+    }
+
+    /// Search across an entire Python package.
+    pub async fn search_package(
+        &self,
+        package_name: &str,
+        context_path: &Path,
+        pattern: &str,
+        search_mode: crate::doc_engine::python_analyzer::SearchMode,
+        limit: usize,
+    ) -> Result<Vec<crate::doc_engine::python_analyzer::SearchResult>> {
+        use crate::doc_engine::python_analyzer;
+
+        let package_root =
+            finder::find_python_package_path_with_context(package_name, Some(context_path))?;
+
+        python_analyzer::search_package(&package_root, pattern, search_mode, limit)
     }
 }

@@ -27,6 +27,7 @@ pub mod fetcher;
 pub mod finder;
 pub mod local;
 pub mod processors;
+pub mod python_analyzer;
 pub mod python_semantic;
 pub mod scraper;
 pub mod types;
@@ -63,7 +64,7 @@ pub struct DocEngine {
     memory_cache: Arc<Mutex<LruCache<String, Arc<CrateDocumentation>>>>,
     version_cache: Arc<Mutex<LruCache<String, String>>>,
     python_semantic_cache: Arc<Mutex<LruCache<String, Arc<PythonSemanticIndex>>>>,
-    python_processor: Arc<processors::python::PythonProcessor>,
+    pub python_processor: Arc<processors::python::PythonProcessor>,
     node_processor: Arc<processors::node::NodeProcessor>,
     rust_processor: Arc<processors::rust::RustProcessor>,
     working_dir: Option<PathBuf>,

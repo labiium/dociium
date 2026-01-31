@@ -6,7 +6,7 @@
 pub use crate::server::{
     CrateInfoParams, GetImplementationParams, GetItemDocParams, ListImplsForTypeParams,
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
-    SemanticSearchParams, SourceSnippetParams,
+    SemanticSearchParams, SourceSnippetParams, ToolConfig,
 };
 
 // Re-export commonly used dependencies for tests

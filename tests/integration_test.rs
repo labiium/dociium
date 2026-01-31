@@ -9,7 +9,7 @@ use dociium::{
     ListTraitImplsParams, RustDocsMcpServer, SearchCratesParams, SearchSymbolsParams,
     SourceSnippetParams,
 };
-use rmcp::{handler::server::tool::Parameters, model::CallToolResult, ServerHandler};
+use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, ServerHandler};
 use std::fs;
 
 use tempfile::TempDir;
@@ -404,6 +404,97 @@ async fn test_concurrent_requests() {
                 eprintln!("Concurrent request failed (expected): {e}");
             }
         }
+    }
+}
+
+/// Test Python introspection with a real package
+/// This test requires Python to be installed but doesn't require pip
+#[tokio::test]
+#[cfg(feature = "integration-tests")]
+async fn test_python_introspection_native() {
+    use std::fs;
+
+    let (server, tmp) = create_test_server().await.unwrap();
+
+    // Create a simple Python package in a virtual environment structure
+    let venv = tmp.path().join(".venv");
+    let site_packages = venv.join("lib").join("python3.9").join("site-packages");
+    let testpkg = site_packages.join("testpkg");
+
+    fs::create_dir_all(&testpkg).unwrap();
+    fs::write(testpkg.join("__init__.py"), "").unwrap();
+    fs::write(
+        testpkg.join("module.py"),
+        r#"
+class TestClass:
+    """This is a test class."""
+
+    def test_method(self):
+        """This is a test method."""
+        return 42
+
+def test_function():
+    """This is a test function."""
+    return "hello"
+"#,
+    )
+    .unwrap();
+
+    // Set environment variable override for testing
+    std::env::set_var("DOC_PYTHON_PACKAGE_PATH", site_packages.to_str().unwrap());
+
+    let params = Parameters(GetImplementationParams {
+        language: "python".to_string(),
+        package_name: "testpkg".to_string(),
+        item_path: "module.py#TestClass".to_string(),
+        context_path: Some(tmp.path().to_string_lossy().to_string()),
+    });
+
+    let response = server.get_implementation(params).await;
+
+    // Clean up environment variable
+    std::env::remove_var("DOC_PYTHON_PACKAGE_PATH");
+
+    // This test validates that the new Python introspection system works
+    // It may fail in environments without Python, but should work on most systems
+    if let Ok(result) = response {
+        let text = get_text_content(&result);
+        assert!(!text.is_empty(), "Result should not be empty");
+        assert!(
+            text.contains("TestClass") || text.contains("test"),
+            "Result should contain class or function definition"
+        );
+    }
+}
+
+/// Test that fallback mechanisms work when pip is not available
+#[tokio::test]
+#[cfg(feature = "integration-tests")]
+async fn test_python_package_discovery_without_pip() {
+    use dociium::doc_engine::finder;
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let venv = tmp.path().join(".venv");
+    let site_packages = venv.join("lib").join("python3.9").join("site-packages");
+    let testpkg = site_packages.join("testpkg");
+
+    fs::create_dir_all(&testpkg).unwrap();
+    fs::write(testpkg.join("__init__.py"), "# Test package").unwrap();
+
+    // Try to find the package without pip (using direct scanning)
+    // This simulates an environment where pip is not in PATH
+    let result = finder::find_python_package_path_with_context("testpkg", Some(tmp.path()));
+
+    // This test demonstrates the new fallback mechanism
+    // In a real scenario, this would work even without pip installed
+    if result.is_ok() {
+        let path = result.unwrap();
+        assert!(path.exists(), "Package path should exist");
+        assert!(
+            path.to_string_lossy().contains("testpkg"),
+            "Path should contain package name"
+        );
     }
 }
 

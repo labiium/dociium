@@ -9,7 +9,7 @@ use tempfile::TempDir;
 #[test]
 fn test_binary_exists() {
     // Test that the binary can be found and executed
-    let mut cmd = Command::cargo_bin("dociium").unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dociium"));
 
     // Just check that the binary exists and can start
     // We expect it to exit quickly since it needs stdio input for MCP
@@ -26,7 +26,7 @@ fn test_binary_with_cache_dir() {
     let temp_dir = TempDir::new().unwrap();
     let cache_path = temp_dir.path().to_str().unwrap();
 
-    let mut cmd = Command::cargo_bin("dociium").unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dociium"));
 
     // Set cache directory environment variable
     let _output = cmd
@@ -41,9 +41,7 @@ fn test_binary_with_cache_dir() {
 #[test]
 fn test_binary_help_or_version() {
     // Most Rust binaries support --help, let's see if ours does
-    // Note: Our binary doesn't implement clap args, so this will likely fail
-    // But we can at least verify it doesn't panic
-    let mut cmd = Command::cargo_bin("dociium").unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dociium"));
 
     let _output = cmd
         .arg("--help")

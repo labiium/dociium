@@ -6,33 +6,127 @@
 use crate::doc_engine::DocEngine;
 use anyhow::Result;
 use rmcp::{
-    handler::server::{router::tool::ToolRouter, tool::Parameters},
+    handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
     model::{CallToolResult, Content, ErrorData, Implementation, ServerCapabilities, ServerInfo},
     service::RequestContext,
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::sync::Arc;
+
+/// Configuration for selective tool enablement
+#[derive(Debug, Clone)]
+pub struct ToolConfig {
+    /// Enable Rust-specific tools
+    pub rust_enabled: bool,
+    /// Enable Python-specific tools
+    pub python_enabled: bool,
+    /// Enable Node.js-specific tools
+    pub node_enabled: bool,
+    /// Enable cache management tools
+    pub cache_enabled: bool,
+}
+
+impl ToolConfig {
+    /// Create a config with all tools enabled
+    pub fn all() -> Self {
+        Self {
+            rust_enabled: true,
+            python_enabled: true,
+            node_enabled: true,
+            cache_enabled: true,
+        }
+    }
+
+    /// Create a config with only Rust tools enabled
+    pub fn rust_only() -> Self {
+        Self {
+            rust_enabled: true,
+            python_enabled: false,
+            node_enabled: false,
+            cache_enabled: true, // cache tools always included
+        }
+    }
+
+    /// Create a config with only Python tools enabled
+    pub fn python_only() -> Self {
+        Self {
+            rust_enabled: false,
+            python_enabled: true,
+            node_enabled: false,
+            cache_enabled: true, // cache tools always included
+        }
+    }
+
+    /// Create a config with only Node.js tools enabled
+    pub fn node_only() -> Self {
+        Self {
+            rust_enabled: false,
+            python_enabled: false,
+            node_enabled: true,
+            cache_enabled: true, // cache tools always included
+        }
+    }
+
+    /// Apply disablement flags to the config
+    pub fn apply_disables(
+        mut self,
+        no_rust: bool,
+        no_python: bool,
+        no_node: bool,
+        no_cache: bool,
+    ) -> Self {
+        if no_rust {
+            self.rust_enabled = false;
+        }
+        if no_python {
+            self.python_enabled = false;
+        }
+        if no_node {
+            self.node_enabled = false;
+        }
+        if no_cache {
+            self.cache_enabled = false;
+        }
+        self
+    }
+
+    /// Validate that at least one category is enabled
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if !self.rust_enabled && !self.python_enabled && !self.node_enabled && !self.cache_enabled {
+            return Err(anyhow::anyhow!(
+                "At least one tool category must be enabled"
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RustDocsMcpServer {
     engine: Arc<DocEngine>,
     tool_router: ToolRouter<Self>,
+    config: ToolConfig,
 }
 
 impl RustDocsMcpServer {
     pub async fn new(cache_dir: impl AsRef<std::path::Path>) -> Result<Self> {
         let engine = Arc::new(DocEngine::new(cache_dir).await?);
 
-        Ok(Self::from_engine(engine))
+        Ok(Self::from_engine_with_config(engine, ToolConfig::all()))
     }
 
     pub fn from_engine(engine: Arc<DocEngine>) -> Self {
+        Self::from_engine_with_config(engine, ToolConfig::all())
+    }
+
+    pub fn from_engine_with_config(engine: Arc<DocEngine>, config: ToolConfig) -> Self {
         Self {
             engine,
             tool_router: Self::tool_router(),
+            config,
         }
     }
 }
@@ -110,6 +204,52 @@ pub struct SemanticSearchParams {
     /// Optional maximum number of results (defaults to 10, max 50)
     pub limit: Option<u32>,
     /// Optional project root to prefer when resolving local packages
+    pub context_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ListClassMethodsParams {
+    /// The language of the package (currently only "python" is supported)
+    pub language: String,
+    /// The name of the package
+    pub package_name: String,
+    /// Path to the class, format: "path/to/file#ClassName"
+    pub item_path: String,
+    /// Include private methods (starting with _)
+    pub include_private: Option<bool>,
+    /// Include inherited methods
+    pub include_inherited: Option<bool>,
+    /// Optional project context path
+    pub context_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetClassMethodParams {
+    /// The language of the package (currently only "python" is supported)
+    pub language: String,
+    /// The name of the package
+    pub package_name: String,
+    /// Path to the class, format: "path/to/file#ClassName"
+    pub item_path: String,
+    /// The name of the method to retrieve
+    pub method_name: String,
+    /// Optional project context path
+    pub context_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchPackageCodeParams {
+    /// The language of the package (currently only "python" is supported)
+    pub language: String,
+    /// The name of the package to search
+    pub package_name: String,
+    /// Regex pattern to search for
+    pub pattern: String,
+    /// Search mode: "name", "signature", "docstring", or "fulltext"
+    pub search_mode: String,
+    /// Maximum number of results to return
+    pub limit: Option<u32>,
+    /// Optional project context path
     pub context_path: Option<String>,
 }
 
@@ -204,6 +344,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<SearchCratesParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let SearchCratesParams { query, limit } = params.0;
 
         // Validate query
@@ -246,6 +393,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<CrateInfoParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let CrateInfoParams { name } = params.0;
 
         // Validate crate name
@@ -267,6 +421,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<GetItemDocParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let GetItemDocParams {
             crate_name,
             path,
@@ -315,6 +476,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<ListTraitImplsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let ListTraitImplsParams {
             crate_name,
             trait_path,
@@ -353,6 +521,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<ListImplsForTypeParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let ListImplsForTypeParams {
             crate_name,
             type_path,
@@ -391,6 +566,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<SourceSnippetParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let SourceSnippetParams {
             crate_name,
             item_path,
@@ -448,6 +630,20 @@ impl RustDocsMcpServer {
             context_path,
         } = params.0;
 
+        // Check if the requested language tools are enabled
+        let lang_lower = language.trim().to_lowercase();
+        if lang_lower == "python" && !self.config.python_enabled {
+            return Err(ErrorData::invalid_request(
+                "Python tools are disabled for this server instance",
+                None,
+            ));
+        } else if lang_lower == "node" && !self.config.node_enabled {
+            return Err(ErrorData::invalid_request(
+                "Node.js tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         if package_name.trim().is_empty() {
             return Err(ErrorData::invalid_params(
                 "A valid package_name is required.",
@@ -493,6 +689,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<crate::doc_engine::types::ImportResolutionParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let p = params.0;
 
         // Basic validation
@@ -535,6 +738,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<SearchSymbolsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.rust_enabled {
+            return Err(ErrorData::invalid_request(
+                "Rust tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let SearchSymbolsParams {
             crate_name,
             query,
@@ -625,6 +835,13 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<SemanticSearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.python_enabled {
+            return Err(ErrorData::invalid_request(
+                "Python tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let SemanticSearchParams {
             language,
             package_name,
@@ -710,12 +927,208 @@ impl RustDocsMcpServer {
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
 
+    /// List all methods of a class
+    #[tool(description = "List all methods of a class with signatures and metadata")]
+    pub async fn list_class_methods(
+        &self,
+        params: Parameters<ListClassMethodsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.python_enabled {
+            return Err(ErrorData::invalid_request(
+                "Python tools are disabled for this server instance",
+                None,
+            ));
+        }
+
+        let ListClassMethodsParams {
+            language,
+            package_name,
+            item_path,
+            include_private,
+            include_inherited: _,
+            context_path,
+        } = params.0;
+
+        if language.trim().to_lowercase() != "python" {
+            return Err(ErrorData::invalid_params(
+                "Currently only 'python' is supported",
+                None,
+            ));
+        }
+
+        // Parse item_path: "path/to/file#ClassName"
+        let parts: Vec<&str> = item_path.split('#').collect();
+        if parts.len() != 2 {
+            return Err(ErrorData::invalid_params(
+                "item_path must be in format 'path/to/file#ClassName'",
+                None,
+            ));
+        }
+        let relative_path = parts[0];
+        let class_name = parts[1];
+
+        let context = std::path::PathBuf::from(context_path.as_deref().unwrap_or("."));
+
+        let methods = self
+            .engine
+            .python_processor
+            .list_class_methods(
+                &package_name,
+                &context,
+                relative_path,
+                class_name,
+                include_private.unwrap_or(false),
+            )
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to list class methods: {}", e), None)
+            })?;
+
+        let json_content = serde_json::to_string(&methods)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Get a specific method from a class
+    #[tool(description = "Get the implementation of a specific method from a class")]
+    pub async fn get_class_method(
+        &self,
+        params: Parameters<GetClassMethodParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.python_enabled {
+            return Err(ErrorData::invalid_request(
+                "Python tools are disabled for this server instance",
+                None,
+            ));
+        }
+
+        let GetClassMethodParams {
+            language,
+            package_name,
+            item_path,
+            method_name,
+            context_path,
+        } = params.0;
+
+        if language.trim().to_lowercase() != "python" {
+            return Err(ErrorData::invalid_params(
+                "Currently only 'python' is supported",
+                None,
+            ));
+        }
+
+        // Parse item_path: "path/to/file#ClassName"
+        let parts: Vec<&str> = item_path.split('#').collect();
+        if parts.len() != 2 {
+            return Err(ErrorData::invalid_params(
+                "item_path must be in format 'path/to/file#ClassName'",
+                None,
+            ));
+        }
+        let relative_path = parts[0];
+        let class_name = parts[1];
+
+        let context = std::path::PathBuf::from(context_path.as_deref().unwrap_or("."));
+
+        let method = self
+            .engine
+            .python_processor
+            .get_class_method(
+                &package_name,
+                &context,
+                relative_path,
+                class_name,
+                &method_name,
+            )
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to get class method: {}", e), None)
+            })?;
+
+        let json_content = serde_json::to_string(&method)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
+    /// Search code across a package
+    #[tool(description = "Search for code patterns across an entire Python package")]
+    pub async fn search_package_code(
+        &self,
+        params: Parameters<SearchPackageCodeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.python_enabled {
+            return Err(ErrorData::invalid_request(
+                "Python tools are disabled for this server instance",
+                None,
+            ));
+        }
+
+        let SearchPackageCodeParams {
+            language,
+            package_name,
+            pattern,
+            search_mode,
+            limit,
+            context_path,
+        } = params.0;
+
+        if language.trim().to_lowercase() != "python" {
+            return Err(ErrorData::invalid_params(
+                "Currently only 'python' is supported",
+                None,
+            ));
+        }
+
+        let mode = match search_mode.to_lowercase().as_str() {
+            "name" => crate::doc_engine::python_analyzer::SearchMode::Name,
+            "signature" => crate::doc_engine::python_analyzer::SearchMode::Signature,
+            "docstring" => crate::doc_engine::python_analyzer::SearchMode::Docstring,
+            "fulltext" => crate::doc_engine::python_analyzer::SearchMode::FullText,
+            _ => {
+                return Err(ErrorData::invalid_params(
+                    "search_mode must be 'name', 'signature', 'docstring', or 'fulltext'",
+                    None,
+                ));
+            }
+        };
+
+        let context = std::path::PathBuf::from(context_path.as_deref().unwrap_or("."));
+
+        let search_limit = limit.unwrap_or(10) as usize;
+        if search_limit > 100 {
+            return Err(ErrorData::invalid_params("limit too large (max 100)", None));
+        }
+
+        let results = self
+            .engine
+            .python_processor
+            .search_package(&package_name, &context, &pattern, mode, search_limit)
+            .await
+            .map_err(|e| {
+                ErrorData::internal_error(format!("Failed to search package: {}", e), None)
+            })?;
+
+        let json_content = serde_json::to_string(&results)
+            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+
+        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+    }
+
     /// Get cache statistics
     #[tool(description = "Get cache statistics and performance metrics")]
     pub async fn get_cache_stats(
         &self,
         _params: Parameters<CacheStatsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.cache_enabled {
+            return Err(ErrorData::invalid_request(
+                "Cache management tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let stats = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             self.engine.get_cache_stats(),
@@ -736,11 +1149,18 @@ impl RustDocsMcpServer {
         &self,
         params: Parameters<ClearCacheParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = if let Some(crate_name) = params.0.crate_name {
+        if !self.config.cache_enabled {
+            return Err(ErrorData::invalid_request(
+                "Cache management tools are disabled for this server instance",
+                None,
+            ));
+        }
+
+        let result = if let Some(ref crate_name) = params.0.crate_name {
             // Clear cache for specific crate
-            validate_crate_name(&crate_name)?;
+            validate_crate_name(crate_name)?;
             self.engine
-                .clear_crate_cache(&crate_name)
+                .clear_crate_cache(crate_name)
                 .await
                 .map_err(|e| {
                     ErrorData::internal_error(format!("Failed to clear crate cache: {e}"), None)
@@ -764,6 +1184,13 @@ impl RustDocsMcpServer {
         &self,
         _params: Parameters<CacheStatsParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if !self.config.cache_enabled {
+            return Err(ErrorData::invalid_request(
+                "Cache management tools are disabled for this server instance",
+                None,
+            ));
+        }
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             self.engine.cleanup_expired_cache(),
@@ -788,6 +1215,9 @@ impl ServerHandler for RustDocsMcpServer {
             server_info: Implementation {
                 name: "rust-docs-mcp-server".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                title: Some("Rust Docs MCP Server".to_string()),
+                website_url: Some("https://github.com/anthropics/claude-code".to_string()),
+                icons: Some(vec![]),
             },
             instructions: Some(
                 "Rust Documentation MCP Server - Query Rust crate documentation, explore traits, implementations, and source code. Use search_crates to find crates, crate_info for details, get_item_doc for documentation, list_trait_impls/list_impls_for_type for implementation exploration, source_snippet for code viewing, search_symbols for symbol discovery, get_cache_stats for cache statistics, clear_cache to clear cache entries, and cleanup_cache to remove expired entries."
@@ -798,7 +1228,7 @@ impl ServerHandler for RustDocsMcpServer {
 
     async fn initialize(
         &self,
-        _request: rmcp::model::InitializeRequestParam,
+        _request: rmcp::model::InitializeRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::InitializeResult, ErrorData> {
         Ok(self.get_info())
@@ -809,6 +1239,78 @@ impl ServerHandler for RustDocsMcpServer {
 mod tests {
     use super::*;
 
+    // ===== ToolConfig Tests =====
+    #[test]
+    fn test_tool_config_rust_only() {
+        let config = ToolConfig::rust_only();
+        assert!(config.rust_enabled);
+        assert!(!config.python_enabled);
+        assert!(!config.node_enabled);
+        assert!(config.cache_enabled); // cache always included
+    }
+
+    #[test]
+    fn test_tool_config_python_only() {
+        let config = ToolConfig::python_only();
+        assert!(!config.rust_enabled);
+        assert!(config.python_enabled);
+        assert!(!config.node_enabled);
+        assert!(config.cache_enabled); // cache always included
+    }
+
+    #[test]
+    fn test_tool_config_node_only() {
+        let config = ToolConfig::node_only();
+        assert!(!config.rust_enabled);
+        assert!(!config.python_enabled);
+        assert!(config.node_enabled);
+        assert!(config.cache_enabled); // cache always included
+    }
+
+    #[test]
+    fn test_tool_config_all() {
+        let config = ToolConfig::all();
+        assert!(config.rust_enabled);
+        assert!(config.python_enabled);
+        assert!(config.node_enabled);
+        assert!(config.cache_enabled);
+    }
+
+    #[test]
+    fn test_tool_config_apply_disables() {
+        let config = ToolConfig::all().apply_disables(true, false, false, false); // disable rust only
+
+        assert!(!config.rust_enabled);
+        assert!(config.python_enabled);
+        assert!(config.node_enabled);
+        assert!(config.cache_enabled);
+    }
+
+    #[test]
+    fn test_tool_config_validate_empty() {
+        let config = ToolConfig {
+            rust_enabled: false,
+            python_enabled: false,
+            node_enabled: false,
+            cache_enabled: false,
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_tool_config_validate_with_cache() {
+        let config = ToolConfig {
+            rust_enabled: false,
+            python_enabled: false,
+            node_enabled: false,
+            cache_enabled: true,
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    // ===== Input Validation Tests =====
     #[test]
     fn test_validate_crate_name() {
         assert!(validate_crate_name("serde").is_ok());

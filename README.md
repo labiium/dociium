@@ -1,26 +1,20 @@
 # Dociium
 
-Fast multi-language documentation + source retrieval via the **Model Context Protocol (MCP)**.
+Multi-language documentation and code discovery via the **Model Context Protocol (MCP)**.
 
-Dociium lets AI assistants (Claude Desktop, Continue, etc.) fetch Rust crate docs (from docs.rs), Python / Node.js local package source, perform symbol + trait exploration, and resolve imports — all with robust caching and a canonical schema.
+Dociium enables AI assistants (Claude Desktop, Cline, etc.) to search and retrieve documentation and source code for Rust, Python, and Node.js packages—with semantic search, import resolution, and intelligent caching.
 
 ---
 
-## ✨ Highlights
+## ✨ Features
 
-- **Rust**: Crate search, item docs, trait impl listings, symbol search, source snippet placeholders (real source integration roadmap).
-- **Python / Node.js**: Local environment code + doc extraction (best‑effort heuristic parsing); Python supports `pip`, `uv`, `venv`, and `conda`.
-- **Python Semantic Search**: Natural-language discovery across local package symbols (docstrings + signatures).
-- **Import Resolution**: Best‑effort mapping of `use` / `from` / `import` statements to file + symbol locations (Rust / Python / Node).
-- **Working Directory Support**: Configurable base context for package resolution; ideal for monorepos and multi-virtualenv setups.
-- **Context-Aware Caching**: Import resolution cache includes context path to prevent cross-contamination between projects.
-- **Streamable HTTP Transport**: Optional SSE/Web-compatible transport in addition to stdio.
-- **Shared Canonical Types**: Stable JSON schema via `shared_types` (unifying multiple legacy internal representations).
-- **Deterministic Symbol Index**: Rebuildable from cached search index; future pluggable search backends.
-- **Resilient docs.rs parsing**: Hardened search-index.js extraction (brace balancing + pattern matching).
-- **Layered Caching**: In‑memory LRU, disk (items / crates / indexes), import-resolution in‑process LRU+TTL.
-- **Metrics**: Cache hit/miss rates, evictions, oldest-entry age, size accounting.
-- **Safe Boundaries**: Input validation (crate names, item paths, context lines, search limits).
+- **Rust**: Crate search (crates.io), documentation (docs.rs), trait implementations, symbol search
+- **Python**: Semantic search, source code extraction, class method introspection, universal package manager support (pip, uv, poetry, pdm, conda)
+- **Node.js**: Source code extraction with ESM/CJS support
+- **Import Resolution**: Map `use`/`import`/`from` statements to source locations (Rust/Python/Node)
+- **CLI + MCP Server**: Use as MCP server (stdio/HTTP) or invoke tools directly from command line
+- **Smart Caching**: Multi-layer (in-memory LRU + disk) with metrics and TTL
+- **Context-Aware**: Working directory support for monorepos and multi-virtualenv projects
 
 ---
 
@@ -32,132 +26,227 @@ Dociium lets AI assistants (Claude Desktop, Continue, etc.) fetch Rust crate doc
 # From crates.io
 cargo install dociium
 
-# Or from source (latest main)
+# From source
 git clone https://github.com/labiium/dociium.git
 cd dociium
 cargo install --path .
 ```
 
-### Minimal MCP Client Config
+### As MCP Server
 
-```jsonc
+Add to your MCP settings (e.g., Claude Desktop `claude_desktop_config.json`):
+
+```json
 {
-  "servers": {
+  "mcpServers": {
     "dociium": {
-      "command": "dociium"
+      "command": "dociium",
+      "args": ["stdio"]
     }
   }
 }
 ```
 
-### Ask Your Assistant
+Then ask your assistant:
+- "Search for async http clients on crates.io"
+- "Show documentation for tokio::sync::Mutex"
+- "Find Python functions for parsing JSON in the requests library"
+- "What are all the methods on the Flask class?"
 
-Examples you can literally type:
+### As CLI Tool
 
-- “Search crates for async http client”
-- “Show docs for tokio::sync::Mutex”
-- “List impls of serde::Serialize”
-- “What traits does std::vec::Vec implement?”
-- "Resolve these imports:\nuse std::fmt::Display;\nuse serde::de::Deserializer;"
-- "Find symbols in chrono related to time zone"
-- "Show implementation of requests.get"
-- "Get Node implementation of express Router"
+```bash
+# Rust crate search
+dociium search-crates "async http"
 
-**Note for uv users:** Works seamlessly with uv-managed Python environments—just ensure `uv` is in your PATH.
+# Python semantic search
+dociium semantic-search requests "make http post request with json"
 
----
+# Get Python class methods
+dociium list-class-methods flask "app.py#Flask"
 
-## 🧰 MCP Tools
+# Get implementation
+dociium get-implementation --language python requests "sessions.py#Session"
 
-| Tool | Description | Key Params | Notes |
-|------|-------------|------------|-------|
-| `search_crates` | Search crates.io | `query`, `limit` | Network call with timeout |
-| `crate_info` | Crate metadata & versions | `name` | Includes downloads, deps |
-| `get_item_doc` | Rust item documentation | `crate_name`, `path`, `version?` | On-demand docs.rs scrape |
-| `list_trait_impls` | List impls of a trait | `crate_name`, `trait_path` | Uses processed search index |
-| `list_impls_for_type` | Trait impls for a type | `crate_name`, `type_path` | Symmetric to above |
-| `source_snippet` | Code snippet (placeholder) | `crate_name`, `item_path`, `context_lines?` | `context_lines ≤ 100` enforced |
-| `search_symbols` | In-crate symbol search | `crate_name`, `query`, `kinds?`, `limit?` | Returns canonical `shared_types::SymbolSearchResult` |
-| `get_implementation` | Local code (py/node/rust) | `language`, `package_name`, `item_path`, `context_path?` | `item_path` uses `file#symbol`; `context_path` resolved relative to working directory |
-| `resolve_imports` | Resolve import/use lines | `language`, `package`, `import_line?` / `code_block?`, `context_path?` | Multi-line extraction; `context_path` affects package resolution |
-| `semantic_search` | Semantic package search (Python) | `language`, `package_name`, `query`, `limit?`, `context_path?` | Uses TF‑IDF + docstring analysis; `context_path` resolved relative to working directory |
-| `get_cache_stats` | Cache metrics snapshot | – | Provides hit/miss/size metrics |
-| `clear_cache` | Clear all or crate-specific | `crate_name?` | Resets stats if full clear |
-| `cleanup_cache` | TTL-based purge | – | Applies configured TTL |
+# Cache statistics
+dociium cache-stats
+```
 
 ---
 
-## 🗂 Shared Types
+## 🧰 Available Tools
 
-Responses progressively adopt canonical structures in `shared_types.rs` (e.g. `SymbolSearchResult`, `SourceLocation`, `SourceSnippet`).
+### Rust Documentation
 
-Goals:
-1. Eliminate drift between internal modules.
-2. Provide stable MCP-exposed JSON schemas.
-3. Allow future richer typing (enums for visibility/kind) with backward-compatible variants.
+| Tool | Description | Example |
+|------|-------------|---------|
+| `search_crates` | Search crates.io | `dociium search-crates "async runtime"` |
+| `crate_info` | Get crate metadata | `dociium crate-info tokio` |
+| `get_item_doc` | Fetch item docs from docs.rs | `dociium get-item-doc tokio "sync::Mutex"` |
+| `list_trait_impls` | List implementations of a trait | `dociium list-trait-impls serde "Serialize"` |
+| `list_impls_for_type` | List traits for a type | `dociium list-impls-for-type std "Vec"` |
+| `search_symbols` | Search symbols in a crate | `dociium search-symbols tokio "spawn"` |
+| `source_snippet` | Get source code (placeholder) | `dociium source-snippet tokio "sync::Mutex"` |
+
+### Python & Node.js
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `semantic_search` | Natural language search | `dociium semantic-search requests "retry failed requests"` |
+| `get_implementation` | Get source code | `dociium get-implementation -l python requests "api.py#get"` |
+| `list_class_methods` | List all methods of a class | `dociium list-class-methods flask "app.py#Flask"` |
+| `get_class_method` | Get specific method | `dociium get-class-method flask "app.py#Flask" route` |
+| `search_package_code` | Regex code search | `dociium search-package-code -l python flask "async def"` |
+
+### Multi-Language
+
+| Tool | Description | Example |
+|------|-------------|---------|
+| `resolve_imports` | Resolve import statements | Via MCP JSON-RPC |
+| `cache_stats` | Get cache metrics | `dociium cache-stats` |
+| `clear_cache` | Clear cache | `dociium clear-cache` |
+| `cleanup_cache` | Remove expired entries | `dociium cleanup-cache` |
+
+---
+
+## 🔎 Python Semantic Search
+
+The standout feature for Python developers. Search packages using natural language:
+
+```bash
+dociium semantic-search requests "create session with retry logic"
+```
+
+**How it works:**
+- TF-IDF scoring over function names, docstrings, signatures, and module paths
+- Indexes public symbols (functions and classes) from installed packages
+- First search builds index (0.5-3s), subsequent searches <10ms
+- Results include relevance scores, signatures, docstring previews, and source locations
+
+**MCP JSON-RPC:**
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "semantic_search",
+    "arguments": {
+      "language": "python",
+      "package_name": "requests",
+      "query": "send authenticated http request",
+      "limit": 5
+    }
+  }
+}
+```
+
+**Score interpretation:**
+- 0.9+: Excellent match
+- 0.7-0.9: Good match
+- 0.5-0.7: Moderate relevance
+- <0.5: Weak match
+
+---
+
+## 🐍 Python Package Discovery
+
+Works with **any** Python package manager—no pip required!
+
+**Multi-level fallback strategy:**
+
+1. **Environment variables** (highest priority)
+   - `DOC_PYTHON_PACKAGE_PATH_<PKG>` or `DOC_PYTHON_PACKAGE_PATH`
+
+2. **Native introspection** (pure Rust, no Python runtime needed)
+   - Scans virtual environments: `.venv`, `venv`, `$VIRTUAL_ENV`
+   - Checks user site-packages: `~/.local/lib/python*/site-packages`
+   - Scans system locations: `/usr/local/lib`, `/opt/homebrew/lib`
+
+3. **pip show** (if pip available)
+
+4. **uv pip show** (if uv available)
+
+5. **Direct filesystem scan** (last resort)
+
+**Supported package managers:**
+- pip
+- uv
+- poetry
+- pdm
+- conda
+- pipenv
+- Any tool that installs to standard site-packages
+
+**Context-aware resolution:**
+Use `context_path` parameter to target specific project virtualenvs:
+
+```bash
+dociium semantic-search --context /path/to/project mypackage "find something"
+```
 
 ---
 
 ## 🧩 Import Resolution
 
-Supported patterns (best effort):
+Resolve import/use statements to their source locations:
 
-### Rust
+**Rust:**
 ```rust
-use crate::module::Type;
-use std::fmt::{Display, Debug};
+use tokio::sync::Mutex;
+use std::collections::HashMap;
 ```
-Heuristics:
-- Locates module file (`mod.rs`, `file.rs`).
-- Scans for direct symbol definitions.
-- Traverses simple `pub use path::To::Item;` re-exports.
 
-Limitations:
-- Macro-expanded items, glob imports, deep multi-hop chains, conditional modules not fully resolved yet.
-
-### Python
+**Python:**
 ```python
-import package.sub.mod
-from package.sub.mod import A, B
+from requests import Session
+from requests.adapters import HTTPAdapter
 ```
-Heuristics:
-- Maps module path to `file.py` or `__init__.py`.
-- Scans for `class` / `def` definitions (no dynamic attribute detection).
-- Does not yet interpret complex `__all__` manipulations or runtime aliasing.
 
-### Node (ESM)
-```js
-import { A, B } from "pkg/sub";
-import * as NS from "pkg";
-import DefaultExport from "pkg/file";
+**Node.js:**
+```javascript
+import { Router } from 'express';
+import * as utils from './utils.js';
 ```
-Heuristics:
-- Tries extensions: `.ts`, `.js`, `.mjs`, `.cjs`.
-- Index resolution for directories (`index.*`).
-- Scans exports (`export function|class|const|let|var`, common patterns).
 
-Cache:
-- In-process LRU (capacity 512) with 5-minute TTL.
-- Key: `language::package::context_path::import_line` (context-aware to prevent collisions across different project directories).
+Returns file paths and line numbers for each imported symbol.
+
+**Limitations:**
+- Best-effort heuristics (not a full compiler)
+- Macro-expanded items (Rust) not resolved
+- Dynamic imports (Python `__getattr__`) not detected
+- Complex re-export chains may be incomplete
 
 ---
 
-## 🗄 Caching Architecture
+## 🗄️ Caching
 
-Layer | Purpose | Tech | Notes
-------|---------|------|------
-In-Memory LRU | Recently accessed crate docs & versions | `lru::LruCache` | Fast reuse
-Item Cache | Individual item docs (Rust on-demand) | Disk + memory map | gz (optional)
-Crate Index Cache | `search-index.js` parsed dataset | Disk + memory | Avoid repeated scraping
-Generic Data | Arbitrary blobs (future extensibility) | Disk | Prefixed file naming
-Import Resolution | Per-process mapping of import → result | Custom LRU+TTL | No disk persistence
-Metrics | Stats (hits, misses, evictions) | Internal counters | Exposed via `get_cache_stats`
+**Multi-layer architecture:**
 
-Key Metrics (from `get_cache_stats`):
-- `hit_rate`, `miss_rate`
-- `evictions`
-- `total_entries` / disk vs memory size
-- `oldest_entry_age_hours`
+| Layer | Storage | Purpose |
+|-------|---------|---------|
+| Memory LRU | In-process | Hot crate docs, versions |
+| Disk (items) | Gzipped files | Individual Rust item docs |
+| Disk (indexes) | JSON | Parsed search-index.js |
+| Import cache | In-process LRU+TTL | Import resolution (5min TTL) |
+| Semantic index | In-process | Python package TF-IDF vectors |
+
+**Cache metrics:**
+```bash
+dociium cache-stats
+```
+
+Returns hit rates, miss rates, evictions, total entries, and oldest entry age.
+
+**Cache management:**
+```bash
+# Clear all caches
+dociium clear-cache
+
+# Clear specific crate
+dociium clear-cache --crate-name tokio
+
+# Remove expired entries
+dociium cleanup-cache
+```
 
 ---
 
@@ -165,24 +254,15 @@ Key Metrics (from `get_cache_stats`):
 
 ### Cache Directory
 
-Priority order for cache directory:
-1. CLI: `--cache-dir`
+Priority:
+1. CLI flag: `--cache-dir <path>`
 2. Env: `RDOCS_CACHE_DIR`
-3. Platform default (`$XDG_CACHE_HOME/dociium` or OS equivalent)
+3. Platform default: `$XDG_CACHE_HOME/dociium` (Linux), `~/Library/Caches/dociium` (macOS)
 4. Fallback: `./.dociium-cache`
 
 ### Working Directory
 
-The documentation engine supports an optional **working directory** that determines the base context for resolving local packages. This is particularly useful for:
-
-- **Monorepos** with multiple Python virtualenvs (including `uv` projects) or Node.js workspaces
-- **Project-specific package installations** that differ from global environments
-- **Context-aware caching** to prevent cross-contamination between different project contexts
-- **uv-managed projects** where packages are isolated in `.venv` directories
-
-**Setting the Working Directory:**
-
-The working directory can be configured programmatically when initializing the `DocEngine`:
+Set programmatically when embedding:
 
 ```rust
 use dociium::doc_engine::{DocEngine, DocEngineOptions};
@@ -194,224 +274,105 @@ let options = DocEngineOptions {
 let engine = DocEngine::new_with_options("./cache", options).await?;
 ```
 
-**Behavior:**
+Or use `context_path` in tool calls (resolved relative to working directory).
 
-- When `working_dir` is set, all `context_path` parameters in MCP tool calls are resolved relative to this directory (unless an absolute path is provided)
-- Python package discovery tries `pip show` first, then falls back to `uv pip show` if pip is unavailable (respecting local virtualenvs and uv-managed environments)
-- Node.js `npm root` commands use the working directory as context
-- Import resolution cache keys include the resolved context path, ensuring separate cache entries per project
-- Falls back to `std::env::current_dir()` when not explicitly set
+### Environment Overrides
 
-**uv Support:**
-
-For Python users leveraging [uv](https://github.com/astral-sh/uv), the engine automatically detects and uses `uv pip show` when `pip` is not available. This works seamlessly with:
-- `uv sync` and `uv run` managed environments
-- Projects using `uv venv` for virtual environment creation
-- `uv pip install` managed dependencies
-
-No additional configuration needed—just ensure `uv` is in your PATH.
-
-### Environment Variable Overrides
-
-Environment variables for local package discovery (these take precedence over working directory resolution):
-
-| Language | Variable Patterns | Purpose |
-|----------|-------------------|---------|
-| Python | `DOC_PYTHON_PACKAGE_PATH` / `DOC_PYTHON_PACKAGE_PATH_<PKG>` | Force root directory for scanning (bypasses `pip show` and working directory) |
-| Node   | `DOC_NODE_PACKAGE_PATH` / `DOC_NODE_PACKAGE_PATH_<PKG>`     | Override `node_modules` root (bypasses `npm root` and working directory) |
-| Python Semantic Index | `DOC_PYTHON_PACKAGE_PATH_*` (as above) | Same overrides used when building semantic index |
-
-**Note:** Environment variables take highest precedence, followed by working directory context, then system defaults.
-
-### CLI Transport Options
-
-`dociium` defaults to stdio. To expose the HTTP transport instead:
+Force package locations:
 
 ```bash
-dociium --transport streamable-http --http-listen 127.0.0.1:7777
+export DOC_PYTHON_PACKAGE_PATH_requests=/custom/path/to/requests
+export DOC_NODE_PACKAGE_PATH_express=/custom/path/to/express
 ```
 
-Flags:
+### HTTP Server Mode
 
-| Flag | Description |
-|------|-------------|
-| `--http-listen <ADDR>` | Required when using `streamable-http`; bind address/port. |
-| `--http-path <PATH>` | Endpoint prefix (default `/mcp`). |
-| `--http-keep-alive-secs <N>` | Override SSE ping interval (use `0` to disable). |
-| `--http-stateless` | Disable per-session state (stateless mode). |
-
-The HTTP transport mounts the MCP endpoint at `http://<addr><path>` using Server-Sent Events for streaming responses. Clients must send JSON POSTs with `Accept: application/json, text/event-stream` and consume the SSE stream for incremental output.
-
-## 🔎 Python Semantic Search
-
-The `semantic_search` tool ranks local Python symbols using a TF‑IDF model over docstrings, signatures, and module context. Typical request:
-
-```jsonc
-{
-  "type": "call_tool",
-  "name": "semantic_search",
-  "arguments": {
-    "language": "python",
-    "package_name": "requests",
-    "query": "create an http session with retries",
-    "limit": 5
-  }
-}
-```
-
-Key notes:
-
-- `package_name` is resolved using `pip show` or `uv pip show` in the context of the configured working directory (if set) or current directory.
-- `context_path` parameter (when provided) is resolved relative to the working directory and overrides the default context for package resolution.
-- Results include docstring previews, inferred signatures, and file/line offsets for quick navigation.
-- Indexes are cached in-process and on disk for repeat queries (cleared via `clear_cache`).
-- For monorepos, multi-virtualenv setups, or uv-managed projects, configure the working directory at engine initialization or use `context_path` to target specific project directories.
-
----
-
-## 🐍 uv Integration
-
-Dociium provides first-class support for Python users leveraging [uv](https://github.com/astral-sh/uv), the fast Python package manager written in Rust.
-
-### Automatic Detection
-
-The engine automatically tries `uv pip show` as a fallback when `pip` is not available, enabling seamless operation with uv-managed environments:
+Run as HTTP server instead of stdio:
 
 ```bash
-# Works out of the box with uv projects
-cd my-uv-project
-uv sync
-# dociium will automatically use 'uv pip show' to locate packages
+dociium http --http-listen 127.0.0.1:7777
 ```
 
-### Supported Workflows
-
-- **`uv sync`**: Packages installed via `uv sync` are automatically discovered
-- **`uv venv`**: Virtual environments created with `uv venv` work transparently
-- **`uv pip install`**: Direct package installations are detected
-- **`uv run`**: Scripts run via `uv run` can access dociium features
-
-### Resolution Order
-
-Python package discovery follows this precedence:
-
-1. **Environment variables**: `DOC_PYTHON_PACKAGE_PATH` or `DOC_PYTHON_PACKAGE_PATH_<PKG>`
-2. **pip**: `pip show <package>` (if pip is in PATH)
-3. **uv**: `uv pip show <package>` (fallback if pip unavailable)
-
-### Working Directory with uv
-
-For uv projects with multiple virtual environments or monorepo setups, configure the working directory:
-
-```rust
-use dociium::doc_engine::{DocEngine, DocEngineOptions};
-use std::path::PathBuf;
-
-// Point to your uv project root
-let options = DocEngineOptions {
-    working_dir: Some(PathBuf::from("/path/to/uv-project")),
-};
-let engine = DocEngine::new_with_options("./cache", options).await?;
-```
-
-Alternatively, use `context_path` in MCP tool calls to target specific uv projects dynamically.
-
-### Requirements
-
-- `uv` must be installed and available in your PATH
-- No additional configuration needed—detection is automatic
+Options:
+- `--http-listen <addr:port>`: Bind address (required)
+- `--http-path <path>`: Endpoint prefix (default `/mcp`)
+- `--http-keep-alive-secs <n>`: SSE ping interval (default 30, 0=disabled)
+- `--http-stateless`: Disable per-session state
 
 ---
 
-## 🔍 Symbol Search
+## 🔐 Security
 
-Currently a deterministic in-memory index built from docs.rs search index:
-- Linear scoring pass; suitable for small/medium crates.
-- Roadmap: optional Tantivy or other inverted index for scaling large ecosystems.
-
----
-
-## 🕸 docs.rs Scraping
-
-Features:
-- Hardened parsing of `search-index.js` (multiple historical variations).
-- Balanced brace extraction prevents malformed slices.
-- Item doc fetching probes multiple type prefixes (`fn`, `struct`, `trait`, etc.).
-- Controlled timeouts & limited retries.
-
-Planned Enhancements:
-- ETag / conditional requests
-- Backoff & telemetry for format shifts
-- Fallback scraping of alternative selectors when primary CSS fails
-
----
-
-## ⛔ Current Limitations
-
-Area | Limitation | Planned
------|------------|--------
-Rust Source Snippets | Placeholder content only | Integrate local crate source unpacking
-Deep Re-exports | Multi-hop + wildcard chains incomplete | Recursive graph with cycle guard
-Python Dynamics | Runtime-added attrs / metaclass effects ignored | AST + runtime overlay
-Node Export Patterns | Re-exports from barrel files partially handled | Secondary pass over `export * from`
-Search Scaling | O(N) scan | Optional Tantivy feature flag
-Trait Impl Richness | Limited metadata (blanket detection heuristic) | Rustdoc JSON ingestion (future)
-Cache Persistence | Import cache ephemeral | Optional persistent layer w/ pruning
-
----
-
-## 🔐 Security & Safety
-
-- Sanitized filenames (path & reserved char replacement).
-- Version & crate name validation (length + charset).
-- Timeout wrapping all external network calls.
-- No shell eval for imports; only structured parsing.
-- Avoids panics on malformed search index through layered fallbacks.
-
----
-
-## 📈 Roadmap
-
-Phase | Focus
-------|------
-Short-Term | Complete shared type migration, scraper config consolidation, multi-hop import traversal, richer cache metrics tooling
-Medium-Term | Real Rust source snippet extraction, async fs refactors, improved Python `__all__` + Node export graph
-Long-Term | Pluggable large-scale search backend, persistent import resolution store, full observability (metrics + tracing exporters)
+- **Path sanitization**: All file paths validated and normalized
+- **Input validation**: Length and charset checks on crate names, versions, queries
+- **Timeout protection**: All network calls have configurable timeouts
+- **No shell execution**: All external commands use structured APIs (no `eval`)
+- **Safe parsing**: Fallback-based parsing prevents crashes on malformed data
 
 ---
 
 ## 🧪 Testing
 
-Category | Notes
----------|------
-Integration Tests | Exercise MCP tools end-to-end (network-gated where applicable)
-Externalized Unit Tests | All major internal modules tested from `tests/` (cache, search, import resolution timing)
-Cache Metrics | Hit/miss rate invariants validated
-Feature Gating | Network tests disabled unless explicitly enabled (e.g. `ENABLE_NETWORK_TESTS=1` or cargo feature)
-
-Run locally:
-
 ```bash
+# All tests
 cargo test
+
+# With network tests (requires internet)
+ENABLE_NETWORK_TESTS=1 cargo test
+
+# Linting
 cargo clippy --all-targets -- -D warnings
+
+# Format check
+cargo fmt --check
 ```
+
+Test coverage:
+- Integration tests for all MCP tools
+- Unit tests for cache, search, import resolution
+- Network tests (gated by env var)
+- Cache metrics validation
 
 ---
 
-## 🛠 Development
+## 📈 Roadmap
+
+**Near-term:**
+- Real Rust source snippet extraction (currently placeholder)
+- Improved multi-hop import resolution
+- Richer cache eviction policies
+- Performance metrics export (Prometheus/OpenTelemetry)
+
+**Medium-term:**
+- Python `__all__` and re-export handling
+- Node.js barrel file resolution
+- Pluggable search backends (Tantivy integration)
+- Persistent import cache
+
+**Long-term:**
+- Full rustdoc JSON ingestion
+- Language server protocol (LSP) integration
+- Multi-language semantic search
+- Distributed cache sharing
+
+---
+
+## 🛠️ Development
 
 ```bash
-# Build
-cargo build
+# Clone and build
+git clone https://github.com/labiium/dociium.git
+cd dociium
+cargo build --release
 
-# Run server (stdio MCP)
-dociium
+# Run as stdio MCP server
+./target/release/dociium stdio
 
-# With explicit cache dir
-dociium --cache-dir /tmp/dociium-cache
+# Run as HTTP server
+./target/release/dociium http --http-listen 127.0.0.1:7777
 
-# Clear cache via MCP tool (example JSON call)
-# { "tool": "clear_cache", "params": {} }
+# Direct CLI usage
+./target/release/dociium search-crates tokio
 ```
 
 ---
@@ -420,17 +381,21 @@ dociium --cache-dir /tmp/dociium-cache
 
 Dual-licensed under **MIT OR Apache-2.0**.
 
+See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for details.
+
 ---
 
 ## 🙌 Contributing
 
-PRs welcome:
-1. Open an issue describing enhancement / fix.
-2. Include tests (integration or unit).
-3. Maintain shared_types compatibility (avoid breaking schema fields).
+Contributions welcome! Please:
+
+1. Open an issue describing the enhancement or fix
+2. Include tests (integration and/or unit)
+3. Maintain backward compatibility for MCP tool schemas
+4. Run `cargo clippy` and `cargo fmt` before submitting
 
 ---
 
-**Dociium**: Keep your AI context grounded in real code & docs — fast, structured, reproducible.
+**Dociium** - Keep your AI assistant grounded in real code and documentation.
 
-Happy exploring!
+Built by [Labiium](https://github.com/labiium) with ❤️

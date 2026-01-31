@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use anyhow::Result;
 use dociium::doc_engine::types::ImportResolutionParams;
 use dociium::RustDocsMcpServer;
-use rmcp::handler::server::tool::Parameters;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 
 /// Extract the first text content blob from a tool result
