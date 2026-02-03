@@ -63,7 +63,7 @@ crates_io_api = "0.12"
 scraper = "0.25.0"
 
 # Search index and database (optional feature `search-index`)
-tantivy = { version = "0.21", optional = true }
+tantivy = { version = "0.22", optional = true }
 # rocksdb integration planned for future release
 
 # Compression

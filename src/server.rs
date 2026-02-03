@@ -184,7 +184,14 @@ pub struct GetImplementationParams {
     pub language: String,
     /// The name of the package as known to its package manager (e.g., "curly", "express").
     pub package_name: String,
-    /// Path to the item within the package, format: "path/to/file#item_name".
+    /// Path to the item RELATIVE TO PACKAGE ROOT, format: "path/to/file#item_name".
+    ///
+    /// IMPORTANT: Do NOT include the package name as a prefix.
+    ///
+    /// Examples (assuming package "requests"):
+    /// - ✅ CORRECT: "sessions.py#Session"
+    /// - ✅ CORRECT: "api.py#get"
+    /// - ❌ WRONG: "requests/sessions.py#Session"
     pub item_path: String,
     /// Optional path to a project/environment to search within (especially for Node.js). Defaults to current dir.
     pub context_path: Option<String>,
@@ -219,7 +226,15 @@ pub struct ListClassMethodsParams {
     pub language: String,
     /// The name of the package
     pub package_name: String,
-    /// Path to the class, format: "path/to/file#ClassName"
+    /// Path to the class RELATIVE TO PACKAGE ROOT, format: "path/to/file#ClassName"
+    ///
+    /// IMPORTANT: Do NOT include the package name as a prefix.
+    ///
+    /// Examples (assuming package "requests"):
+    /// - ✅ CORRECT: "sessions.py#Session"
+    /// - ✅ CORRECT: "adapters.py#HTTPAdapter"
+    /// - ❌ WRONG: "requests/sessions.py#Session"
+    /// - ❌ WRONG: "requests/adapters.py#HTTPAdapter"
     pub item_path: String,
     /// Include private methods (starting with _)
     pub include_private: Option<bool>,
@@ -235,7 +250,15 @@ pub struct GetClassMethodParams {
     pub language: String,
     /// The name of the package
     pub package_name: String,
-    /// Path to the class, format: "path/to/file#ClassName"
+    /// Path to the class RELATIVE TO PACKAGE ROOT, format: "path/to/file#ClassName"
+    ///
+    /// IMPORTANT: Do NOT include the package name as a prefix.
+    ///
+    /// Examples (assuming package "requests"):
+    /// - ✅ CORRECT: "sessions.py#Session"
+    /// - ✅ CORRECT: "adapters.py#HTTPAdapter"
+    /// - ❌ WRONG: "requests/sessions.py#Session"
+    /// - ❌ WRONG: "requests/adapters.py#HTTPAdapter"
     pub item_path: String,
     /// The name of the method to retrieve
     pub method_name: String,
@@ -342,6 +365,51 @@ fn validate_item_path(path: &str) -> Result<(), ErrorData> {
     Ok(())
 }
 
+/// Validates Python/Node.js item_path to ensure it doesn't include the package name prefix
+fn validate_python_item_path(item_path: &str, package_name: &str) -> Result<(), ErrorData> {
+    // Check if the path starts with the package name followed by a path separator
+    let normalized_package = package_name.trim().to_lowercase().replace(['-', '_'], "");
+
+    if let Some(hash_pos) = item_path.find('#') {
+        let file_path = &item_path[..hash_pos];
+        let path_parts: Vec<&str> = file_path.split('/').collect();
+
+        if !path_parts.is_empty() {
+            let first_part = path_parts[0].to_lowercase().replace(['-', '_'], "");
+
+            // Check if first part matches package name
+            if first_part == normalized_package {
+                // Suggest the correct path
+                let suggested_path = if path_parts.len() > 1 {
+                    path_parts[1..].join("/") + &item_path[hash_pos..]
+                } else {
+                    item_path[hash_pos..].to_string()
+                };
+
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "item_path should not include the package name '{}' as a prefix. \
+                         The path is relative to the package root. \
+                         Try using '{}' instead of '{}'",
+                        package_name, suggested_path, item_path
+                    ),
+                    None,
+                ));
+            }
+        }
+    }
+
+    // Also validate the format
+    if !item_path.contains('#') {
+        return Err(ErrorData::invalid_params(
+            "item_path must contain '#' to separate file path from item name (e.g., 'file.py#ClassName')",
+            None,
+        ));
+    }
+
+    Ok(())
+}
+
 #[tool_router]
 impl RustDocsMcpServer {
     /// Search for crates on crates.io
@@ -352,7 +420,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -385,10 +453,14 @@ impl RustDocsMcpServer {
                 None,
             )
         })?
-        .map_err(|e| ErrorData::internal_error(format!("Failed to search crates: {e}"), None))?;
+        .map_err(|e| ErrorData::internal_error(format!("Failed to search crates.io for '{query}': {e}. Ensure you have internet connectivity and the query is valid."), None))?;
 
-        let json_content = serde_json::to_string(&results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&results).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize crate search results: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -401,7 +473,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -412,11 +484,12 @@ impl RustDocsMcpServer {
         validate_crate_name(&name)?;
 
         let info = self.engine.crate_info(&name).await.map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get crate info: {e}"), None)
+            ErrorData::internal_error(format!("Failed to fetch metadata for crate '{name}': {e}. Verify the crate name is spelled correctly and exists on crates.io."), None)
         })?;
 
-        let json_content = serde_json::to_string(&info)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&info).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize crate metadata: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -429,7 +502,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -467,11 +540,12 @@ impl RustDocsMcpServer {
         })?
         .map_err(|e| {
             tracing::error!("Error in get_item_doc for {}::{}: {}", crate_name, path, e);
-            ErrorData::internal_error(format!("Failed to get item documentation: {e}"), None)
+            ErrorData::internal_error(format!("Failed to retrieve documentation for '{crate_name}::{path}': {e}. The item may not exist or the rustdoc format may be incompatible."), None)
         })?;
 
-        let json_content = serde_json::to_string(&doc)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&doc).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize documentation data: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -484,7 +558,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -512,11 +586,15 @@ impl RustDocsMcpServer {
             )
         })?
         .map_err(|e| {
-            ErrorData::internal_error(format!("Failed to list trait implementations: {e}"), None)
+            ErrorData::internal_error(format!("Failed to list implementations for trait '{crate_name}::{trait_path}': {e}. Verify the trait exists and is accessible."), None)
         })?;
 
-        let json_content = serde_json::to_string(&impls)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&impls).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize trait implementation list: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -529,7 +607,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -557,11 +635,15 @@ impl RustDocsMcpServer {
             )
         })?
         .map_err(|e| {
-            ErrorData::internal_error(format!("Failed to list type implementations: {e}"), None)
+            ErrorData::internal_error(format!("Failed to list trait implementations for type '{crate_name}::{type_path}': {e}. Verify the type exists."), None)
         })?;
 
-        let json_content = serde_json::to_string(&impls)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&impls).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize type implementation list: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -574,7 +656,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -612,11 +694,12 @@ impl RustDocsMcpServer {
             )
         })?
         .map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get source snippet: {e}"), None)
+            ErrorData::internal_error(format!("Failed to retrieve source code for '{crate_name}::{item_path}': {e}. The source may not be available or the item path may be incorrect."), None)
         })?;
 
-        let json_content = serde_json::to_string(&snippet)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&snippet).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize source snippet: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -640,12 +723,12 @@ impl RustDocsMcpServer {
         let lang_lower = language.trim().to_lowercase();
         if lang_lower == "python" && !self.config.python_enabled {
             return Err(ErrorData::invalid_request(
-                "Python tools are disabled for this server instance",
+                "Python tools are disabled. To enable, start the server without the --no-python flag (or use --python-only for Python-only mode).",
                 None,
             ));
         } else if lang_lower == "node" && !self.config.node_enabled {
             return Err(ErrorData::invalid_request(
-                "Node.js tools are disabled for this server instance",
+                "Node.js tools are disabled. To enable, start the server without the --no-node flag (or use --node-only for Node.js-only mode).",
                 None,
             ));
         }
@@ -661,6 +744,11 @@ impl RustDocsMcpServer {
                 "item_path must be in the format 'path/to/file#item_name'.",
                 None,
             ));
+        }
+
+        // Validate that item_path doesn't include package name prefix for Python/Node
+        if lang_lower == "python" || lang_lower == "node" {
+            validate_python_item_path(&item_path, &package_name)?;
         }
 
         let context = tokio::time::timeout(
@@ -680,11 +768,15 @@ impl RustDocsMcpServer {
             )
         })?
         .map_err(|e| {
-            ErrorData::internal_error(format!("Failed to get implementation context: {e}"), None)
+            ErrorData::internal_error(format!("Failed to get implementation for '{item_path}' in package '{package_name}': {e}. Check that the package is installed and the path format is correct (e.g., 'module.py#ClassName')."), None)
         })?;
 
-        let json_content = serde_json::to_string(&context)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&context).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize implementation context: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -697,7 +789,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -729,11 +821,15 @@ impl RustDocsMcpServer {
                 )
             })?
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to resolve imports: {e}"), None)
+                ErrorData::internal_error(format!("Failed to resolve imports for package '{}': {e}. Ensure the package is installed and the import statement is valid.", p.package), None)
             })?;
 
-        let json_content = serde_json::to_string(&response)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&response).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize import resolution results: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -746,7 +842,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.rust_enabled {
             return Err(ErrorData::invalid_request(
-                "Rust tools are disabled for this server instance",
+                "Rust tools are disabled. To enable, start the server without the --no-rust flag (or use --rust-only for Rust-only mode).",
                 None,
             ));
         }
@@ -802,7 +898,7 @@ impl RustDocsMcpServer {
                 None,
             )
         })?
-        .map_err(|e| ErrorData::internal_error(format!("Failed to search symbols: {e}"), None))?;
+        .map_err(|e| ErrorData::internal_error(format!("Failed to search symbols in crate '{crate_name}' for '{query}': {e}. The crate may not be indexed or the query may be malformed."), None))?;
 
         // Convert engine (legacy) SymbolSearchResult into shared_types canonical form
         let shared_results: Vec<crate::shared_types::SymbolSearchResult> = results
@@ -827,8 +923,12 @@ impl RustDocsMcpServer {
             })
             .collect();
 
-        let json_content = serde_json::to_string(&shared_results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&shared_results).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize symbol search results: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -843,7 +943,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.python_enabled {
             return Err(ErrorData::invalid_request(
-                "Python tools are disabled for this server instance",
+                "Python tools are disabled. To enable, start the server without the --no-python flag (or use --python-only for Python-only mode).",
                 None,
             ));
         }
@@ -922,13 +1022,17 @@ impl RustDocsMcpServer {
         })?
         .map_err(|e| {
             ErrorData::internal_error(
-                format!("Semantic search failed for package '{}': {e}", package_name),
+                format!("Failed semantic search in package '{package_name}' for '{query}': {e}. Ensure the package is installed in the specified context path."),
                 None,
             )
         })?;
 
-        let json_content = serde_json::to_string(&results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&results).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize semantic search results: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -941,7 +1045,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.python_enabled {
             return Err(ErrorData::invalid_request(
-                "Python tools are disabled for this server instance",
+                "Python tools are disabled. To enable, start the server without the --no-python flag (or use --python-only for Python-only mode).",
                 None,
             ));
         }
@@ -961,6 +1065,9 @@ impl RustDocsMcpServer {
                 None,
             ));
         }
+
+        // Validate that item_path doesn't include package name prefix
+        validate_python_item_path(&item_path, &package_name)?;
 
         // Parse item_path: "path/to/file#ClassName"
         let parts: Vec<&str> = item_path.split('#').collect();
@@ -987,11 +1094,12 @@ impl RustDocsMcpServer {
             )
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to list class methods: {}", e), None)
+                ErrorData::internal_error(format!("Failed to list methods for class '{class_name}' in '{package_name}': {e}. Verify the class exists at '{relative_path}'."), None)
             })?;
 
-        let json_content = serde_json::to_string(&methods)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&methods).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize class methods: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1004,7 +1112,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.python_enabled {
             return Err(ErrorData::invalid_request(
-                "Python tools are disabled for this server instance",
+                "Python tools are disabled. To enable, start the server without the --no-python flag (or use --python-only for Python-only mode).",
                 None,
             ));
         }
@@ -1023,6 +1131,9 @@ impl RustDocsMcpServer {
                 None,
             ));
         }
+
+        // Validate that item_path doesn't include package name prefix
+        validate_python_item_path(&item_path, &package_name)?;
 
         // Parse item_path: "path/to/file#ClassName"
         let parts: Vec<&str> = item_path.split('#').collect();
@@ -1049,11 +1160,12 @@ impl RustDocsMcpServer {
             )
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to get class method: {}", e), None)
+                ErrorData::internal_error(format!("Failed to get method '{method_name}' from class '{class_name}': {e}. Verify the method exists and is accessible."), None)
             })?;
 
-        let json_content = serde_json::to_string(&method)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&method).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize class method data: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1066,7 +1178,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.python_enabled {
             return Err(ErrorData::invalid_request(
-                "Python tools are disabled for this server instance",
+                "Python tools are disabled. To enable, start the server without the --no-python flag (or use --python-only for Python-only mode).",
                 None,
             ));
         }
@@ -1113,11 +1225,15 @@ impl RustDocsMcpServer {
             .search_package(&package_name, &context, &pattern, mode, search_limit)
             .await
             .map_err(|e| {
-                ErrorData::internal_error(format!("Failed to search package: {}", e), None)
+                ErrorData::internal_error(format!("Failed to search package '{package_name}' for pattern '{pattern}': {e}. Check that the package is installed and the regex pattern is valid."), None)
             })?;
 
-        let json_content = serde_json::to_string(&results)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&results).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize package search results: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1130,7 +1246,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.cache_enabled {
             return Err(ErrorData::invalid_request(
-                "Cache management tools are disabled for this server instance",
+                "Cache management tools are disabled. To enable, start the server without the --no-cache flag.",
                 None,
             ));
         }
@@ -1141,10 +1257,11 @@ impl RustDocsMcpServer {
         )
         .await
         .map_err(|_| ErrorData::internal_error("Timeout getting cache stats".to_string(), None))?
-        .map_err(|e| ErrorData::internal_error(format!("Failed to get cache stats: {e}"), None))?;
+        .map_err(|e| ErrorData::internal_error(format!("Failed to retrieve cache statistics: {e}. The cache directory may be inaccessible."), None))?;
 
-        let json_content = serde_json::to_string(&stats)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&stats).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize cache statistics: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1157,7 +1274,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.cache_enabled {
             return Err(ErrorData::invalid_request(
-                "Cache management tools are disabled for this server instance",
+                "Cache management tools are disabled. To enable, start the server without the --no-cache flag.",
                 None,
             ));
         }
@@ -1169,17 +1286,18 @@ impl RustDocsMcpServer {
                 .clear_crate_cache(crate_name)
                 .await
                 .map_err(|e| {
-                    ErrorData::internal_error(format!("Failed to clear crate cache: {e}"), None)
-                })?
+                ErrorData::internal_error(format!("Failed to clear cache for crate '{crate_name}': {e}. The crate may not be cached or the cache directory may be locked."), None)
+            })?
         } else {
             // Clear all cache
             self.engine.clear_all_cache().await.map_err(|e| {
-                ErrorData::internal_error(format!("Failed to clear all cache: {e}"), None)
+                ErrorData::internal_error(format!("Failed to clear all cache entries: {e}. Some cache files may be in use by another process."), None)
             })?
         };
 
-        let json_content = serde_json::to_string(&result)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&result).map_err(|e| {
+            ErrorData::internal_error(format!("Failed to serialize cache clear result: {e}"), None)
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1192,7 +1310,7 @@ impl RustDocsMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.config.cache_enabled {
             return Err(ErrorData::invalid_request(
-                "Cache management tools are disabled for this server instance",
+                "Cache management tools are disabled. To enable, start the server without the --no-cache flag.",
                 None,
             ));
         }
@@ -1203,10 +1321,14 @@ impl RustDocsMcpServer {
         )
         .await
         .map_err(|_| ErrorData::internal_error("Timeout cleaning up cache".to_string(), None))?
-        .map_err(|e| ErrorData::internal_error(format!("Failed to cleanup cache: {e}"), None))?;
+        .map_err(|e| ErrorData::internal_error(format!("Failed to clean up expired cache entries: {e}. Some entries may be locked or the cache directory may be inaccessible."), None))?;
 
-        let json_content = serde_json::to_string(&result)
-            .map_err(|e| ErrorData::internal_error(format!("Serialization error: {e}"), None))?;
+        let json_content = serde_json::to_string(&result).map_err(|e| {
+            ErrorData::internal_error(
+                format!("Failed to serialize cache cleanup result: {e}"),
+                None,
+            )
+        })?;
 
         Ok(CallToolResult::success(vec![Content::text(json_content)]))
     }
@@ -1246,34 +1368,42 @@ impl ServerHandler for RustDocsMcpServer {
     ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
         // Get the full list from the router
         let all_tools = self.tool_router.list_all();
-        
+
         // Filter tools based on config
-        let filtered_tools: Vec<rmcp::model::Tool> = all_tools.into_iter().filter(|tool| {
-            let name = tool.name.as_ref();
-            match name {
-                // Rust tools (8 tools)
-                "search_crates" | "crate_info" | "get_item_doc" | "list_trait_impls" 
-                | "list_impls_for_type" | "source_snippet" | "resolve_imports" | "search_symbols" => {
-                    self.config.rust_enabled
+        let filtered_tools: Vec<rmcp::model::Tool> = all_tools
+            .into_iter()
+            .filter(|tool| {
+                let name = tool.name.as_ref();
+                match name {
+                    // Rust tools (8 tools)
+                    "search_crates"
+                    | "crate_info"
+                    | "get_item_doc"
+                    | "list_trait_impls"
+                    | "list_impls_for_type"
+                    | "source_snippet"
+                    | "resolve_imports"
+                    | "search_symbols" => self.config.rust_enabled,
+                    // Python tools (4 tools)
+                    "semantic_search"
+                    | "list_class_methods"
+                    | "get_class_method"
+                    | "search_package_code" => self.config.python_enabled,
+                    // Cache tools (3 tools)
+                    "get_cache_stats" | "clear_cache" | "cleanup_cache" => {
+                        self.config.cache_enabled
+                    }
+                    // Cross-language tool (get_implementation supports Python and Node.js)
+                    "get_implementation" => {
+                        // Show this tool if either Python or Node.js is enabled
+                        self.config.python_enabled || self.config.node_enabled
+                    }
+                    // Default: include the tool (shouldn't happen for known tools)
+                    _ => true,
                 }
-                // Python tools (4 tools)
-                "semantic_search" | "list_class_methods" | "get_class_method" | "search_package_code" => {
-                    self.config.python_enabled
-                }
-                // Cache tools (3 tools)
-                "get_cache_stats" | "clear_cache" | "cleanup_cache" => {
-                    self.config.cache_enabled
-                }
-                // Cross-language tool (get_implementation supports Python and Node.js)
-                "get_implementation" => {
-                    // Show this tool if either Python or Node.js is enabled
-                    self.config.python_enabled || self.config.node_enabled
-                }
-                // Default: include the tool (shouldn't happen for known tools)
-                _ => true,
-            }
-        }).collect();
-        
+            })
+            .collect();
+
         Ok(rmcp::model::ListToolsResult {
             tools: filtered_tools,
             next_cursor: None,
@@ -1287,7 +1417,7 @@ impl ServerHandler for RustDocsMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<rmcp::model::CallToolResult, ErrorData> {
         use rmcp::handler::server::tool::ToolCallContext;
-        
+
         let tool_context = ToolCallContext::new(self, request, context);
         self.tool_router.call(tool_context).await
     }

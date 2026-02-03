@@ -2,9 +2,45 @@
 //!
 //! This module handles direct invocation of all dociium tools from the command line.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use dociium::doc_engine::DocEngine;
 use std::sync::Arc;
+
+/// Validates that item_path doesn't include the package name as a prefix
+fn validate_item_path(item_path: &str, package_name: &str) -> Result<()> {
+    // Check if the path starts with the package name followed by a path separator
+    let normalized_package = package_name.trim().to_lowercase().replace(['-', '_'], "");
+
+    if let Some(hash_pos) = item_path.find('#') {
+        let file_path = &item_path[..hash_pos];
+        let path_parts: Vec<&str> = file_path.split('/').collect();
+
+        if !path_parts.is_empty() {
+            let first_part = path_parts[0].to_lowercase().replace(['-', '_'], "");
+
+            // Check if first part matches package name
+            if first_part == normalized_package {
+                // Suggest the correct path
+                let suggested_path = if path_parts.len() > 1 {
+                    path_parts[1..].join("/") + &item_path[hash_pos..]
+                } else {
+                    item_path[hash_pos..].to_string()
+                };
+
+                bail!(
+                    "item_path should not include the package name '{}' as a prefix. \
+                     The path is relative to the package root. \
+                     Try using '{}' instead of '{}'",
+                    package_name,
+                    suggested_path,
+                    item_path
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
 
 pub async fn handle_command(cmd: crate::Commands, engine: Arc<DocEngine>) -> Result<()> {
     use crate::Commands::*;
@@ -227,6 +263,12 @@ async fn get_implementation(
     context: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
+    // Validate that item_path doesn't include package name prefix for Python/Node
+    let lang_lower = language.trim().to_lowercase();
+    if lang_lower == "python" || lang_lower == "node" {
+        validate_item_path(path, package)?;
+    }
+
     let ctx = engine
         .get_implementation_context(language, package, path, context)
         .await
@@ -243,10 +285,13 @@ async fn list_class_methods(
     context: &str,
     engine: &DocEngine,
 ) -> Result<()> {
+    // Validate that item_path doesn't include package name prefix
+    validate_item_path(path, package)?;
+
     // Parse path: "relative/path#ClassName"
     let parts: Vec<&str> = path.split('#').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Path must be in format 'path/to/file#ClassName'");
+        bail!("Path must be in format 'path/to/file#ClassName'");
     }
 
     let relative_path = parts[0];
@@ -276,10 +321,13 @@ async fn get_class_method(
     context: &str,
     engine: &DocEngine,
 ) -> Result<()> {
+    // Validate that item_path doesn't include package name prefix
+    validate_item_path(path, package)?;
+
     // Parse path: "relative/path#ClassName"
     let parts: Vec<&str> = path.split('#').collect();
     if parts.len() != 2 {
-        anyhow::bail!("Path must be in format 'path/to/file#ClassName'");
+        bail!("Path must be in format 'path/to/file#ClassName'");
     }
 
     let relative_path = parts[0];

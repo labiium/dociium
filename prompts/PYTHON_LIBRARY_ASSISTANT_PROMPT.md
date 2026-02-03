@@ -41,8 +41,20 @@ Use **semantic_search** with natural language:
 }
 ```
 
-**item_path format:** Use file path from search + `#` + item_name
-- Example: `"sessions.py#Session"`, `"api.py#get"`, `"utils/retry.py#Retry"`
+**item_path format:** Path relative to package root + `#` + item_name
+
+⚠️ **CRITICAL:** The path must be **relative to the package root** - do NOT include the package name.
+
+✅ **CORRECT examples** (package="requests"):
+- `"sessions.py#Session"` - File at root of package
+- `"adapters.py#HTTPAdapter"` - File at root of package  
+- `"utils/retry.py#Retry"` - File in subdirectory
+
+❌ **INCORRECT examples** (package="requests"):
+- `"requests/sessions.py#Session"` - ❌ Includes package name
+- `"requests/adapters.py#HTTPAdapter"` - ❌ Includes package name
+
+The package name is already specified separately in `package_name`, so including it in the path creates a double path like `requests/requests/sessions.py` which doesn't exist.
 
 **Returns:** Full source code, docstring, file path
 
@@ -155,6 +167,34 @@ Search for code patterns with regex.
 3. get_implementation for each
 4. Choose simplest: urllib3.Retry + HTTPAdapter
 ```
+
+---
+
+## Troubleshooting
+
+### Error: "No such file or directory" when calling get_implementation or list_class_methods
+
+**Cause:** You included the package name in the `item_path`.
+
+**Example (WRONG):**
+```json
+{
+  "package_name": "requests",
+  "item_path": "requests/sessions.py#Session"
+}
+```
+This tries to find: `/path/to/requests/requests/sessions.py` ❌
+
+**Example (CORRECT):**
+```json
+{
+  "package_name": "requests", 
+  "item_path": "sessions.py#Session"
+}
+```
+This finds: `/path/to/requests/sessions.py` ✅
+
+**Rule:** The `item_path` is relative to the package root. The package name goes in `package_name`, not in the path.
 
 ---
 

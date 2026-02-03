@@ -82,6 +82,7 @@ pub fn fetch_local_item_doc(crate_name: &str, version: &str, item_path: &str) ->
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[cfg(feature = "integration-tests")]
     use std::fs;
