@@ -156,8 +156,9 @@ pub async fn handle_command(cmd: crate::Commands, engine: Arc<DocEngine>) -> Res
 
 async fn search_crates(query: &str, limit: u32) -> Result<()> {
     use dociium::doc_engine::fetcher::Fetcher;
+    use dociium::doc_engine::types::CrateSearchResult;
     let fetcher = Fetcher::new();
-    let results = fetcher
+    let results: Vec<CrateSearchResult> = fetcher
         .search_crates(query, limit)
         .await
         .context("Failed to search crates")?;
@@ -167,7 +168,8 @@ async fn search_crates(query: &str, limit: u32) -> Result<()> {
 }
 
 async fn crate_info(name: &str, engine: &DocEngine) -> Result<()> {
-    let info = engine
+    use dociium::doc_engine::types::CrateInfo;
+    let info: CrateInfo = engine
         .crate_info(name)
         .await
         .context("Failed to get crate info")?;
@@ -182,7 +184,8 @@ async fn get_item_doc(
     version: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
-    let doc = engine
+    use dociium::doc_engine::types::ItemDoc;
+    let doc: ItemDoc = engine
         .get_item_doc(crate_name, path, version)
         .await
         .context("Failed to get item documentation")?;
@@ -197,7 +200,8 @@ async fn list_trait_impls(
     version: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
-    let impls = engine
+    use dociium::doc_engine::types::TraitImpl;
+    let impls: Vec<TraitImpl> = engine
         .list_trait_impls(crate_name, trait_path, version)
         .await
         .context("Failed to list trait implementations")?;
@@ -212,7 +216,8 @@ async fn list_impls_for_type(
     version: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
-    let impls = engine
+    use dociium::doc_engine::types::TypeImpl;
+    let impls: Vec<TypeImpl> = engine
         .list_impls_for_type(crate_name, type_path, version)
         .await
         .context("Failed to list implementations for type")?;
@@ -228,7 +233,8 @@ async fn source_snippet(
     version: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
-    let snippet = engine
+    use dociium::doc_engine::types::SourceSnippet;
+    let snippet: SourceSnippet = engine
         .source_snippet(crate_name, item_path, context_lines, version)
         .await
         .context("Failed to get source snippet")?;
@@ -245,7 +251,8 @@ async fn search_symbols(
     version: Option<&str>,
     engine: &DocEngine,
 ) -> Result<()> {
-    let results = engine
+    use dociium::doc_engine::types::SymbolSearchResult;
+    let results: Vec<SymbolSearchResult> = engine
         .search_symbols(crate_name, query, kinds.as_deref(), limit, version)
         .await
         .context("Failed to search symbols")?;
@@ -285,6 +292,7 @@ async fn list_class_methods(
     context: &str,
     engine: &DocEngine,
 ) -> Result<()> {
+    use dociium::doc_engine::python_analyzer::MethodInfo;
     // Validate that item_path doesn't include package name prefix
     validate_item_path(path, package)?;
 
@@ -298,7 +306,7 @@ async fn list_class_methods(
     let class_name = parts[1];
     let context_path = std::path::PathBuf::from(context);
 
-    let methods = engine
+    let methods: Vec<MethodInfo> = engine
         .python_processor
         .list_class_methods(
             package,
@@ -321,6 +329,7 @@ async fn get_class_method(
     context: &str,
     engine: &DocEngine,
 ) -> Result<()> {
+    use dociium::doc_engine::python_analyzer::MethodInfo;
     // Validate that item_path doesn't include package name prefix
     validate_item_path(path, package)?;
 
@@ -334,7 +343,7 @@ async fn get_class_method(
     let class_name = parts[1];
     let context_path = std::path::PathBuf::from(context);
 
-    let method = engine
+    let method: MethodInfo = engine
         .python_processor
         .get_class_method(
             package,
@@ -358,7 +367,7 @@ async fn search_package_code(
     context: &str,
     engine: &DocEngine,
 ) -> Result<()> {
-    use dociium::doc_engine::python_analyzer::SearchMode;
+    use dociium::doc_engine::python_analyzer::{SearchMode, SearchResult};
 
     let search_mode = match mode.to_lowercase().as_str() {
         "name" => SearchMode::Name,
@@ -370,7 +379,7 @@ async fn search_package_code(
 
     let context_path = std::path::PathBuf::from(context);
 
-    let results = engine
+    let results: Vec<SearchResult> = engine
         .python_processor
         .search_package(package, &context_path, pattern, search_mode, limit as usize)
         .await
@@ -399,7 +408,8 @@ async fn semantic_search(
 // ===== Cache Management Implementations =====
 
 async fn cache_stats(engine: &DocEngine) -> Result<()> {
-    let stats = engine
+    use dociium::doc_engine::types::CacheStatistics;
+    let stats: CacheStatistics = engine
         .get_cache_stats()
         .await
         .context("Failed to get cache stats")?;
@@ -430,7 +440,8 @@ async fn clear_cache(crate_name: Option<&str>, engine: &DocEngine) -> Result<()>
 }
 
 async fn cleanup_cache(engine: &DocEngine) -> Result<()> {
-    let result = engine
+    use dociium::doc_engine::types::CacheOperationResult;
+    let result: CacheOperationResult = engine
         .cleanup_expired_cache()
         .await
         .context("Failed to cleanup cache")?;

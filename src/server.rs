@@ -8,7 +8,7 @@ use anyhow::Result;
 use rmcp::{
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content, ErrorData, Implementation, ServerCapabilities, ServerInfo},
+    model::{CallToolResult, ErrorData, Implementation, ServerCapabilities, ServerInfo},
     service::RequestContext,
     tool, tool_router, RoleServer, ServerHandler,
 };
@@ -455,14 +455,14 @@ impl RustDocsMcpServer {
         })?
         .map_err(|e| ErrorData::internal_error(format!("Failed to search crates.io for '{query}': {e}. Ensure you have internet connectivity and the query is valid."), None))?;
 
-        let json_content = serde_json::to_string(&results).map_err(|e| {
+        let json_value = serde_json::to_value(&results).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize crate search results: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get detailed information about a specific crate
@@ -487,11 +487,11 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to fetch metadata for crate '{name}': {e}. Verify the crate name is spelled correctly and exists on crates.io."), None)
         })?;
 
-        let json_content = serde_json::to_string(&info).map_err(|e| {
+        let json_value = serde_json::to_value(&info).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize crate metadata: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get documentation for a specific item in a crate
@@ -543,11 +543,11 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to retrieve documentation for '{crate_name}::{path}': {e}. The item may not exist or the rustdoc format may be incompatible."), None)
         })?;
 
-        let json_content = serde_json::to_string(&doc).map_err(|e| {
+        let json_value = serde_json::to_value(&doc).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize documentation data: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// List all implementations of a trait
@@ -589,14 +589,14 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to list implementations for trait '{crate_name}::{trait_path}': {e}. Verify the trait exists and is accessible."), None)
         })?;
 
-        let json_content = serde_json::to_string(&impls).map_err(|e| {
+        let json_value = serde_json::to_value(&impls).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize trait implementation list: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// List all trait implementations for a specific type
@@ -638,14 +638,14 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to list trait implementations for type '{crate_name}::{type_path}': {e}. Verify the type exists."), None)
         })?;
 
-        let json_content = serde_json::to_string(&impls).map_err(|e| {
+        let json_value = serde_json::to_value(&impls).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize type implementation list: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get source code snippet for an item
@@ -697,11 +697,11 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to retrieve source code for '{crate_name}::{item_path}': {e}. The source may not be available or the item path may be incorrect."), None)
         })?;
 
-        let json_content = serde_json::to_string(&snippet).map_err(|e| {
+        let json_value = serde_json::to_value(&snippet).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize source snippet: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get the implementation and documentation for a code item from a local environment
@@ -771,14 +771,14 @@ impl RustDocsMcpServer {
             ErrorData::internal_error(format!("Failed to get implementation for '{item_path}' in package '{package_name}': {e}. Check that the package is installed and the path format is correct (e.g., 'module.py#ClassName')."), None)
         })?;
 
-        let json_content = serde_json::to_string(&context).map_err(|e| {
+        let json_value = serde_json::to_value(&context).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize implementation context: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Resolve import statements to concrete symbol source locations (best-effort).
@@ -824,14 +824,14 @@ impl RustDocsMcpServer {
                 ErrorData::internal_error(format!("Failed to resolve imports for package '{}': {e}. Ensure the package is installed and the import statement is valid.", p.package), None)
             })?;
 
-        let json_content = serde_json::to_string(&response).map_err(|e| {
+        let json_value = serde_json::to_value(&response).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize import resolution results: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Search for symbols within a crate
@@ -923,14 +923,14 @@ impl RustDocsMcpServer {
             })
             .collect();
 
-        let json_content = serde_json::to_string(&shared_results).map_err(|e| {
+        let json_value = serde_json::to_value(&shared_results).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize symbol search results: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Perform semantic semantic search across local language packages (Python support).
@@ -1027,14 +1027,14 @@ impl RustDocsMcpServer {
             )
         })?;
 
-        let json_content = serde_json::to_string(&results).map_err(|e| {
+        let json_value = serde_json::to_value(&results).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize semantic search results: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// List all methods of a class
@@ -1097,11 +1097,11 @@ impl RustDocsMcpServer {
                 ErrorData::internal_error(format!("Failed to list methods for class '{class_name}' in '{package_name}': {e}. Verify the class exists at '{relative_path}'."), None)
             })?;
 
-        let json_content = serde_json::to_string(&methods).map_err(|e| {
+        let json_value = serde_json::to_value(&methods).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize class methods: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get a specific method from a class
@@ -1163,11 +1163,11 @@ impl RustDocsMcpServer {
                 ErrorData::internal_error(format!("Failed to get method '{method_name}' from class '{class_name}': {e}. Verify the method exists and is accessible."), None)
             })?;
 
-        let json_content = serde_json::to_string(&method).map_err(|e| {
+        let json_value = serde_json::to_value(&method).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize class method data: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Search code across a package
@@ -1228,14 +1228,14 @@ impl RustDocsMcpServer {
                 ErrorData::internal_error(format!("Failed to search package '{package_name}' for pattern '{pattern}': {e}. Check that the package is installed and the regex pattern is valid."), None)
             })?;
 
-        let json_content = serde_json::to_string(&results).map_err(|e| {
+        let json_value = serde_json::to_value(&results).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize package search results: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Get cache statistics
@@ -1259,11 +1259,11 @@ impl RustDocsMcpServer {
         .map_err(|_| ErrorData::internal_error("Timeout getting cache stats".to_string(), None))?
         .map_err(|e| ErrorData::internal_error(format!("Failed to retrieve cache statistics: {e}. The cache directory may be inaccessible."), None))?;
 
-        let json_content = serde_json::to_string(&stats).map_err(|e| {
+        let json_value = serde_json::to_value(&stats).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize cache statistics: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Clear cache entries
@@ -1295,11 +1295,11 @@ impl RustDocsMcpServer {
             })?
         };
 
-        let json_content = serde_json::to_string(&result).map_err(|e| {
+        let json_value = serde_json::to_value(&result).map_err(|e| {
             ErrorData::internal_error(format!("Failed to serialize cache clear result: {e}"), None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 
     /// Cleanup expired cache entries
@@ -1323,14 +1323,14 @@ impl RustDocsMcpServer {
         .map_err(|_| ErrorData::internal_error("Timeout cleaning up cache".to_string(), None))?
         .map_err(|e| ErrorData::internal_error(format!("Failed to clean up expired cache entries: {e}. Some entries may be locked or the cache directory may be inaccessible."), None))?;
 
-        let json_content = serde_json::to_string(&result).map_err(|e| {
+        let json_value = serde_json::to_value(&result).map_err(|e| {
             ErrorData::internal_error(
                 format!("Failed to serialize cache cleanup result: {e}"),
                 None,
             )
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json_content)]))
+        Ok(CallToolResult::structured(json_value))
     }
 }
 
