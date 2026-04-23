@@ -159,7 +159,7 @@ Works with **any** Python package manager—no pip required!
 2. **Native introspection** (pure Rust, no Python runtime needed)
    - Scans virtual environments: `.venv`, `venv`, `$VIRTUAL_ENV`
    - Checks user site-packages: `~/.local/lib/python*/site-packages`
-   - Scans system locations: `/usr/local/lib`, `/opt/homebrew/lib`
+  - Scans system locations: `/usr/local/lib`, `/usr/lib`, `/opt/venv/lib`, `/opt/homebrew/lib`
 
 3. **pip show** (if pip available)
 

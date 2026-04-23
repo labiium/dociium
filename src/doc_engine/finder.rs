@@ -121,6 +121,7 @@ fn find_python_package_pure_rust(
     let system_paths = [
         "/usr/local/lib",
         "/usr/lib",
+        "/opt/venv/lib",
         "/opt/homebrew/lib",                             // macOS Homebrew
         "/Library/Frameworks/Python.framework/Versions", // macOS system Python
     ];
@@ -318,6 +319,7 @@ fn try_site_packages_scan(package_name: &str, context_path: Option<&Path>) -> Re
         let home_path = Path::new(&home);
         search_paths.push(home_path.join(".local/lib"));
     }
+    search_paths.push(Path::new("/opt/venv/lib").to_path_buf());
 
     // Search for site-packages directories
     for search_path in search_paths {
