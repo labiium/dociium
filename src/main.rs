@@ -392,13 +392,20 @@ fn build_tool_config(
 }
 
 fn setup_logging(cli: &Cli) -> Result<()> {
-    let mut fmt = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env()
-                .add_directive(if cli.quiet { "warn" } else { "info" }.parse()?)
+    let env_filter = if std::env::var_os("RUST_LOG").is_some() {
+        EnvFilter::try_from_default_env()?
+    } else {
+        let mut filter = EnvFilter::new(if cli.quiet { "warn" } else { "info" });
+        if !cli.quiet {
+            filter = filter
                 .add_directive("doc_engine=debug".parse()?)
-                .add_directive("index_core=debug".parse()?),
-        )
+                .add_directive("index_core=debug".parse()?);
+        }
+        filter
+    };
+
+    let mut fmt = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
         .with_target(false);
 
